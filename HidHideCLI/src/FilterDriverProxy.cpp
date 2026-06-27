@@ -89,14 +89,94 @@ namespace
         if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WHITELIST), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
     }
 
+    // Get the application profiles
+    HidHide::AppProfiles GetAppProfiles(_In_ HANDLE)
+    {
+        TRACE_ALWAYS(L"");
+        HidHide::AppProfiles result;
+        HKEY hKey;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL) == ERROR_SUCCESS)
+        {
+            DWORD index = 0;
+            WCHAR valueName[MAX_PATH];
+            DWORD valueNameLen = MAX_PATH;
+            DWORD type = 0;
+            DWORD dataSize = 0;
+
+            while (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, &type, NULL, &dataSize) == ERROR_SUCCESS)
+            {
+                if (type == REG_MULTI_SZ)
+                {
+                    std::vector<WCHAR> buffer(dataSize / sizeof(WCHAR));
+                    valueNameLen = MAX_PATH;
+                    if (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, &type, reinterpret_cast<LPBYTE>(buffer.data()), &dataSize) == ERROR_SUCCESS)
+                    {
+                        HidHide::DeviceInstancePaths devices;
+                        size_t pos = 0;
+                        while (pos < buffer.size() && buffer[pos] != L'\0')
+                        {
+                            std::wstring dev(&buffer[pos]);
+                            devices.insert(dev);
+                            pos += dev.length() + 1;
+                        }
+                        result[std::filesystem::path(valueName)] = devices;
+                    }
+                }
+                index++;
+                valueNameLen = MAX_PATH;
+                dataSize = 0;
+            }
+            RegCloseKey(hKey);
+        }
+        return result;
+    }
+
+    // Set the application profiles
+    void SetAppProfiles(_In_ HANDLE, _In_ HidHide::AppProfiles const& appProfiles)
+    {
+        TRACE_ALWAYS(L"");
+        HKEY hKey;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+        {
+            // Clear existing values
+            DWORD index = 0;
+            WCHAR valueName[MAX_PATH];
+            DWORD valueNameLen = MAX_PATH;
+            while (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS)
+            {
+                RegDeleteValueW(hKey, valueName);
+                valueNameLen = MAX_PATH;
+            }
+
+            for (auto const& pair : appProfiles)
+            {
+                std::vector<WCHAR> buffer;
+                for (auto const& dev : pair.second)
+                {
+                    for (WCHAR c : dev) buffer.push_back(c);
+                    buffer.push_back(L'\0');
+                }
+                buffer.push_back(L'\0'); // Double null terminate
+
+                RegSetValueExW(hKey, pair.first.native().c_str(), 0, REG_MULTI_SZ, reinterpret_cast<const BYTE*>(buffer.data()), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)));
+            }
+            RegCloseKey(hKey);
+        }
+    }
+
     // Get the current whitelist inverse state; returns true when the whitelist logic is the inverse (effectively an application backlist)
     bool GetInverse(_In_ HANDLE device)
     {
         TRACE_ALWAYS(L"");
         DWORD needed{};
         auto buffer{ std::vector<BOOLEAN>(1) };
-        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_WLINVERSE), nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), &needed, nullptr)) THROW_WIN32_LAST_ERROR;
-        if (sizeof(BOOLEAN) != needed) THROW_WIN32(ERROR_INVALID_PARAMETER);
+        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_WLINVERSE), nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), &needed, nullptr))
+        {
+            auto const lastError{ ::GetLastError() };
+            if (ERROR_INVALID_PARAMETER == lastError || ERROR_NOT_SUPPORTED == lastError || ERROR_INVALID_FUNCTION == lastError) return false;
+            THROW_WIN32(lastError);
+        }
+        if (sizeof(BOOLEAN) != needed) return false;
         return (FALSE != buffer.at(0));
     }
 
@@ -107,7 +187,12 @@ namespace
         DWORD needed{};
         auto buffer{ std::vector<BOOLEAN>(1) };
         buffer.at(0) = (inverse ? TRUE : FALSE);
-        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WLINVERSE), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
+        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WLINVERSE), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), nullptr, 0, &needed, nullptr))
+        {
+            auto const lastError{ ::GetLastError() };
+            if (ERROR_INVALID_PARAMETER == lastError || ERROR_NOT_SUPPORTED == lastError || ERROR_INVALID_FUNCTION == lastError) return;
+            THROW_WIN32(lastError);
+        }
     }
 }
 
@@ -120,6 +205,7 @@ namespace HidHide
         , m_Active{ ::GetActive(m_Device.get()) }
         , m_Blacklist{ ::GetBlacklist(m_Device.get()) }
         , m_Whitelist{ ::GetWhitelist(m_Device.get()) }
+        , m_AppProfiles{ ::GetAppProfiles(m_Device.get()) }
         , m_Inverse{ ::GetInverse(m_Device.get()) }
     {
         TRACE_ALWAYS(L"");
@@ -147,6 +233,7 @@ namespace HidHide
         if (m_WriteThrough) THROW_WIN32(ERROR_INVALID_PARAMETER);
         if (::GetWhitelist(m_Device.get()) != m_Whitelist) ::SetWhitelist(m_Device.get(), m_Whitelist);
         if (::GetBlacklist(m_Device.get()) != m_Blacklist) ::SetBlacklist(m_Device.get(), m_Blacklist);
+        if (::GetAppProfiles(m_Device.get()) != m_AppProfiles) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
         if (::GetActive(m_Device.get()) != m_Active) ::SetActive(m_Device.get(), m_Active);
         if (::GetInverse(m_Device.get()) != m_Inverse) ::SetInverse(m_Device.get(), m_Inverse);
     }
@@ -236,13 +323,54 @@ namespace HidHide
     _Use_decl_annotations_
     void FilterDriverProxy::WhitelistDelEntry(FullImageName const& fullImageName)
     {
-        TRACE_ALWAYS(L"");
         if (auto const it{ m_Whitelist.find(fullImageName) }; std::end(m_Whitelist) != it)
         {
             m_Whitelist.erase(it);
             if (m_WriteThrough) ::SetWhitelist(m_Device.get(), m_Whitelist);
         }
     }
+
+    AppProfiles FilterDriverProxy::GetAppProfiles() const
+    {
+        TRACE_ALWAYS(L"");
+        return (m_AppProfiles);
+    }
+
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetAppProfiles(AppProfiles const& appProfiles)
+    {
+        TRACE_ALWAYS(L"");
+        if (m_AppProfiles != appProfiles)
+        {
+            m_AppProfiles = appProfiles;
+            if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+        }
+    }
+
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileAddEntry(FullImageName const& fullImageName, DeviceInstancePath const& deviceInstancePath)
+    {
+        TRACE_ALWAYS(L"");
+        if (m_AppProfiles[fullImageName].insert(deviceInstancePath).second)
+        {
+            if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+        }
+    }
+
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileDelEntry(FullImageName const& fullImageName, DeviceInstancePath const& deviceInstancePath)
+    {
+        TRACE_ALWAYS(L"");
+        if (auto const it{ m_AppProfiles.find(fullImageName) }; std::end(m_AppProfiles) != it)
+        {
+            if (it->second.erase(deviceInstancePath) > 0)
+            {
+                if (it->second.empty()) m_AppProfiles.erase(it);
+                if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+            }
+        }
+    }
+
 
     bool FilterDriverProxy::GetInverse() const
     {

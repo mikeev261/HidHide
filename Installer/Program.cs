@@ -141,7 +141,7 @@ public static class Program
         string infPath = Path.Combine(root, "HidHide.inf");
 
         // Devcon-compatible install (see nefcon readme); --remove-duplicates requires nefcon v1.17.40+.
-        Run(nefcon, $@"install ""{infPath}"" ""root\HidHide"" --no-duplicates --remove-duplicates");
+        TryRun(nefcon, $@"install ""{infPath}"" ""root\HidHide"" --no-duplicates --remove-duplicates");
         TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidHid}");
         TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXnaComposite}");
         TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXboxComposite}");

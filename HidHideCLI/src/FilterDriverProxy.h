@@ -10,6 +10,8 @@ namespace HidHide
     typedef std::filesystem::path FullImageName;
     typedef std::set<FullImageName> FullImageNames;
 
+    typedef std::map<FullImageName, DeviceInstancePaths> AppProfiles;
+
     class FilterDriverProxy
     {
     public:
@@ -58,6 +60,18 @@ namespace HidHide
         // Delete an application from the white-list
         void WhitelistDelEntry(_In_ FullImageName const& fullImageName);
 
+        // Get the app profiles
+        AppProfiles GetAppProfiles() const;
+
+        // Set the app profiles
+        void SetAppProfiles(_In_ AppProfiles const& appProfiles);
+
+        // Add a device to an app profile
+        void AppProfileAddEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
+
+        // Delete a device from an app profile
+        void AppProfileDelEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
+
         // Get the current enabled state; returns true when the device is active in hiding devices on the black-list
         bool GetActive() const;
 
@@ -79,6 +93,7 @@ namespace HidHide
         bool                 m_Active;       // Indicates if the filter driver is hiding devices or not
         DeviceInstancePaths  m_Blacklist;    // The device instance paths of the blacklisted HID devices
         FullImageNames       m_Whitelist;    // The full image names of the whitelisted applications
+        AppProfiles          m_AppProfiles;  // The application profiles mapping full image name to device instance paths
         bool                 m_Inverse;      // Indicates if the inverse whitelist is enabled
     };
 }

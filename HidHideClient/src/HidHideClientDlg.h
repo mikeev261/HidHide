@@ -5,6 +5,7 @@
 #include "IDropTarget.h"
 #include "BlacklistDlg.h"
 #include "WhitelistDlg.h"
+#include "AppProfilesDlg.h"
 
 class CHidHideClientDlg : public CDialogEx, public HidHide::IDropTarget
 {
@@ -85,14 +86,20 @@ private:
     CDropTarget m_DropTarget;
 
     // Controls
-    HICON         m_hIcon;
-    CTabCtrl      m_TabApplication;
-    CBlacklistDlg m_BlacklistDlg;
-    CWhitelistDlg m_WhitelistDlg;
+    HICON           m_hIcon;
+    CTabCtrl        m_TabApplication;
+    CBlacklistDlg   m_BlacklistDlg;
+    CWhitelistDlg   m_WhitelistDlg;
+    CAppProfilesDlg m_AppProfilesDlg;
+
+    // Saved state for App Profiles timer
+    HidHide::DeviceInstancePaths m_SavedBlacklist;
+    bool m_SavedActiveState{ false };
 
     // Events
     afx_msg void OnPaint();
     afx_msg HCURSOR OnQueryDragIcon();
     afx_msg void OnTcnSelchangeTabApplication(_In_ NMHDR* pNMHDR, _Out_ LRESULT* pResult);
     afx_msg void OnShowWindow(_In_ BOOL bShow, _In_ UINT nStatus);
+    afx_msg void OnTimer(UINT_PTR nIDEvent);
 };

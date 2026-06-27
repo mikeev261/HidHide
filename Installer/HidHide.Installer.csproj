@@ -11,6 +11,7 @@
     <IsPackable>false</IsPackable>
     <Description>Builds the HidHide MSI with WixSharp (WiX 5). Run on Windows with WiX 5.0.2 CLI + UI extension installed.</Description>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixSharp_wix4" Version="2.13.0" />

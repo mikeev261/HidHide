@@ -49,43 +49,43 @@
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Production Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Production Release|ARM64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
     <UseOfMfc>Dynamic</UseOfMfc>
-    <SpectreMitigation>Spectre</SpectreMitigation>
-    <PlatformToolset>v143</PlatformToolset>
+    
+    <PlatformToolset>v145</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -363,6 +363,7 @@
     <ClInclude Include="src\BlacklistDlg.h" />
     <ClInclude Include="src\HidHideClient.h" />
     <ClInclude Include="src\HidHideClientDlg.h" />
+    <ClInclude Include="src\AppProfilesDlg.h" />
     <ClInclude Include="src\IDropTarget.h" />
     <ClInclude Include="src\WhitelistDlg.h" />
     <ClInclude Include="stdafx.h" />
@@ -381,6 +382,7 @@
     <ClCompile Include="src\BlacklistDlg.cpp" />
     <ClCompile Include="src\HidHideClient.cpp" />
     <ClCompile Include="src\HidHideClientDlg.cpp" />
+    <ClCompile Include="src\AppProfilesDlg.cpp" />
     <ClCompile Include="src\WhitelistDlg.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>

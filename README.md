@@ -59,7 +59,7 @@ The configuration utility allows you to:
 - Specify which applications may look through the cloak
 - Specify the human interface devices that should be hidden from ordinary applications
 
-The main dialog of the configuration utility offers two main tabs.
+The main dialog of the configuration utility offers three main tabs.
 ![Screen capture of applications tab](/README/DlgApplications.jpg)
 
 The *Applications* tab shows all white-listed applications that are allowed access to the hidden devices. Typically listed
@@ -90,7 +90,18 @@ Access to the underlying driver will be blocked when a device only has composite
 
 The expanded list may mark entries as *absent* or *denied*. *absent* entries appear when the device characteristics are altered.
 These are residual entries in the caches of the operating system, and can be cleaned-up using utilities like *Device Cleanup Tool*.
-*denied* entries appear for hidden devices when the configuration utility itself is not whilelisted.
+*denied* entries appear for hidden devices when the configuration utility itself is not whitelisted.
+
+The *App Profiles* tab hides a different set of physical devices from each configured executable. Add an executable with
+*+* (or drag it onto the tab), select the physical devices it should not see, and leave the configuration utility whenever
+you are done. Profiles are enforced by the driver against each requesting process, so they remain active when the utility
+is closed and multiple profiled applications can run at the same time. Device hiding must still be enabled globally, and
+an application on the *Applications* whitelist retains access to every hidden device.
+
+Physical devices are the primary rows in the profile tree. Expand one only when interface-level control is needed. The
+*Gaming devices only* filter is enabled by default, disconnected devices are hidden by default, and selections excluded by
+either filter are preserved. Executable and device labels include path, serial, or instance details when names would
+otherwise be ambiguous.
 
 ## Package integration
 

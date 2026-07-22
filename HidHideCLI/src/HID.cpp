@@ -456,4 +456,35 @@ namespace HidHide
         // Process each unique base container instance path and replace 
         return (result);
     }
+
+    std::set<DeviceInstancePath> HidDevicePathsForSelection(
+        _In_ std::vector<HidDeviceInformation> const& devices,
+        _In_ std::set<DeviceInstancePath> const& selectedHidDevicePaths)
+    {
+        std::set<DeviceInstancePath> result;
+
+        for (auto const& device : devices)
+        {
+            if (selectedHidDevicePaths.end() == selectedHidDevicePaths.find(device.deviceInstancePath)) continue;
+
+            result.emplace(device.deviceInstancePath);
+            if (!device.xusbDeviceInstancePath.empty()) result.emplace(device.xusbDeviceInstancePath);
+        }
+
+        if (devices.empty() || !std::all_of(devices.begin(), devices.end(), [&selectedHidDevicePaths](auto const& device)
+        {
+            return selectedHidDevicePaths.end() != selectedHidDevicePaths.find(device.deviceInstancePath);
+        })) return result;
+
+        auto const& first{ devices.front() };
+        if (first.baseContainerDeviceInstancePath.empty()) return result;
+
+        if ((GUID_DEVCLASS_HIDCLASS == first.baseContainerClassGuid) || (GUID_DEVCLASS_XUSBCLASS == first.baseContainerClassGuid))
+        {
+            if (devices.size() == first.baseContainerDeviceCount)
+                result.emplace(first.baseContainerDeviceInstancePath);
+        }
+
+        return result;
+    }
 }

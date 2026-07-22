@@ -106,6 +106,8 @@ namespace HidHide
         void AppList(_In_ Args const& args) const;
 
         void AppProfileList(_In_ Args const& args) const;
+        void AppProfileCreate(_In_ Args const& args);
+        void AppProfileDelete(_In_ Args const& args);
         void AppProfileAdd(_In_ Args const& args);
         void AppProfileDel(_In_ Args const& args);
 

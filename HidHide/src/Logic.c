@@ -192,7 +192,8 @@ VOID OnDeviceFileCreate(WDFDEVICE wdfDevice, WDFREQUEST wdfRequest, WDFFILEOBJEC
     }
 
     accessDenied = FALSE;
-    if ((SYSTEM_PID != PROCESS_HANDLE_TO_PROCESS_ID(processId)) && (GetActive()) && (Blacklisted(&deviceInstancePath, sessionId)))
+    if ((SYSTEM_PID != PROCESS_HANDLE_TO_PROCESS_ID(processId)) && (GetActive())
+        && (Blacklisted(&deviceInstancePath, sessionId) || ProfileBlacklisted(processId, &deviceInstancePath)))
     {
         // When the service is active, and the process is not a system-process, and the device being accessed is on the black-list, then the final verdict comes from the white-list
         if (Whitelisted(processId, &cacheHit))
@@ -289,6 +290,11 @@ NTSTATUS OnControlDeviceCreate(WDFDEVICE wdfControlDevice)
     ntstatus = HidHideDriverCreateCollectionForMultiStringProperty(&blacklistedDeviceInstancePaths, &pControlDeviceContext->blacklistedDeviceInstancePaths);
     if (!NT_SUCCESS(ntstatus)) return (ntstatus);
 
+    // Query per-application device profile entries.
+    DECLARE_CONST_UNICODE_STRING(applicationDeviceProfiles, DRIVER_PROPERTY_APPLICATION_DEVICE_PROFILES);
+    ntstatus = HidHideDriverCreateCollectionForMultiStringProperty(&applicationDeviceProfiles, &pControlDeviceContext->applicationDeviceProfiles);
+    if (!NT_SUCCESS(ntstatus)) return (ntstatus);
+
     // Query the boolean property indicating the activity state
     DECLARE_CONST_UNICODE_STRING(active, DRIVER_PROPERTY_ACTIVE);
     ntstatus = HidHideDriverGetBooleanProperty(&active, &pControlDeviceContext->active);
@@ -363,6 +369,12 @@ NTSTATUS OnControlDeviceIoDeviceControl(WDFDEVICE wdfControlDevice, WDFQUEUE wdf
         break;
     case IOCTL_CLR_SESSION_BLACKLIST:
         return (OnControlDeviceIoClearSessionBlacklist(wdfControlDevice, wdfQueue, wdfRequest, outputBufferLength, inputBufferLength, ioControlCode));
+        break;
+    case IOCTL_GET_APP_PROFILES:
+        return (OnControlDeviceIoGetAppProfiles(wdfControlDevice, wdfQueue, wdfRequest, outputBufferLength, inputBufferLength, ioControlCode));
+        break;
+    case IOCTL_SET_APP_PROFILES:
+        return (OnControlDeviceIoSetAppProfiles(wdfControlDevice, wdfQueue, wdfRequest, outputBufferLength, inputBufferLength, ioControlCode));
         break;
     default:
         LOG_AND_RETURN_NTSTATUS(L"OnControlDeviceIoDeviceControl", STATUS_INVALID_PARAMETER);
@@ -585,6 +597,74 @@ NTSTATUS OnControlDeviceIoSetInverse(WDFDEVICE wdfControlDevice, WDFQUEUE wdfQue
 
     WdfRequestCompleteWithInformation(wdfRequest, STATUS_SUCCESS, outputBufferLength);
     return (STATUS_SUCCESS);
+}
+
+_Use_decl_annotations_
+NTSTATUS OnControlDeviceIoGetAppProfiles(WDFDEVICE wdfControlDevice, WDFQUEUE wdfQueue, WDFREQUEST wdfRequest, size_t outputBufferLength, size_t inputBufferLength, ULONG ioControlCode)
+{
+    TRACE_ALWAYS(L"");
+    UNREFERENCED_PARAMETER(wdfControlDevice);
+    UNREFERENCED_PARAMETER(wdfQueue);
+    UNREFERENCED_PARAMETER(ioControlCode);
+
+    if (0 != inputBufferLength) LOG_AND_RETURN_NTSTATUS(L"Validation", STATUS_INVALID_PARAMETER);
+
+    LPWSTR buffer = NULL;
+    size_t neededSizeInCharacters = 0;
+    NTSTATUS ntstatus;
+
+    if (0 == outputBufferLength)
+    {
+        ntstatus = GetAppProfiles(NULL, 0, &neededSizeInCharacters);
+    }
+    else
+    {
+        ntstatus = WdfRequestRetrieveOutputBuffer(wdfRequest, outputBufferLength, &buffer, NULL);
+        if (NT_SUCCESS(ntstatus))
+            ntstatus = GetAppProfiles(buffer, outputBufferLength / sizeof(WCHAR), &neededSizeInCharacters);
+    }
+
+    if (!NT_SUCCESS(ntstatus)) return ntstatus;
+
+    WdfRequestCompleteWithInformation(wdfRequest, STATUS_SUCCESS, neededSizeInCharacters * sizeof(WCHAR));
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+NTSTATUS OnControlDeviceIoSetAppProfiles(WDFDEVICE wdfControlDevice, WDFQUEUE wdfQueue, WDFREQUEST wdfRequest, size_t outputBufferLength, size_t inputBufferLength, ULONG ioControlCode)
+{
+    TRACE_ALWAYS(L"");
+    UNREFERENCED_PARAMETER(wdfControlDevice);
+    UNREFERENCED_PARAMETER(wdfQueue);
+    UNREFERENCED_PARAMETER(ioControlCode);
+
+    if (0 != outputBufferLength) LOG_AND_RETURN_NTSTATUS(L"Validation", STATUS_INVALID_PARAMETER);
+
+    NTSTATUS ntstatus;
+    if (0 == inputBufferLength)
+    {
+        ntstatus = SetAppProfiles(L"\0\0", 2);
+    }
+    else
+    {
+        if ((0 != (inputBufferLength % sizeof(WCHAR))) || (inputBufferLength < (2 * sizeof(WCHAR))))
+            LOG_AND_RETURN_NTSTATUS(L"Validation", STATUS_INVALID_PARAMETER);
+
+        LPWSTR buffer = NULL;
+        ntstatus = WdfRequestRetrieveInputBuffer(wdfRequest, inputBufferLength, &buffer, NULL);
+        if (!NT_SUCCESS(ntstatus)) return ntstatus;
+
+        const size_t characterCount = inputBufferLength / sizeof(WCHAR);
+        if ((L'\0' != buffer[characterCount - 1]) || (L'\0' != buffer[characterCount - 2]))
+            LOG_AND_RETURN_NTSTATUS(L"Validation", STATUS_INVALID_PARAMETER);
+
+        ntstatus = SetAppProfiles(buffer, characterCount);
+    }
+
+    if (!NT_SUCCESS(ntstatus)) return ntstatus;
+
+    WdfRequestCompleteWithInformation(wdfRequest, STATUS_SUCCESS, inputBufferLength);
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_
@@ -840,6 +920,19 @@ BOOLEAN Blacklisted(PUNICODE_STRING deviceInstancePath, ULONG sessionId)
 }
 
 _Use_decl_annotations_
+BOOLEAN ProfileBlacklisted(HANDLE processId, PCUNICODE_STRING deviceInstancePath)
+{
+    TRACE_PERFORMANCE(L"");
+
+    PCONTROL_DEVICE_CONTEXT pControlDeviceContext = ControlDeviceGetContext(s_wdfControlDevice);
+    return HidHideProcessIdMatchesApplicationDeviceProfile(
+        s_criticalSectionLock,
+        processId,
+        &pControlDeviceContext->applicationDeviceProfiles,
+        deviceInstancePath);
+}
+
+_Use_decl_annotations_
 NTSTATUS GetWhitelist(LPWSTR buffer, size_t bufferSizeInCharacters, size_t* neededSizeInCharacters)
 {
     TRACE_ALWAYS(L"");
@@ -928,6 +1021,46 @@ NTSTATUS SetBlacklist(LPWSTR buffer, size_t bufferSizeInCharacters)
     if (!NT_SUCCESS(ntstatus)) return (ntstatus);
 
     return (STATUS_SUCCESS);
+}
+
+_Use_decl_annotations_
+NTSTATUS GetAppProfiles(LPWSTR buffer, size_t bufferSizeInCharacters, size_t* neededSizeInCharacters)
+{
+    TRACE_ALWAYS(L"");
+
+    WDFCOLLECTION wdfCollection;
+    DECLARE_CONST_UNICODE_STRING(parameterName, DRIVER_PROPERTY_APPLICATION_DEVICE_PROFILES);
+    NTSTATUS ntstatus = HidHideDriverCreateCollectionForMultiStringProperty(&parameterName, &wdfCollection);
+    if (NT_SUCCESS(ntstatus))
+    {
+        ntstatus = HidHideCollectionToMultiString(wdfCollection, buffer, bufferSizeInCharacters, neededSizeInCharacters);
+        WdfObjectDelete(wdfCollection);
+    }
+
+    return ntstatus;
+}
+
+_Use_decl_annotations_
+NTSTATUS SetAppProfiles(LPWSTR buffer, size_t bufferSizeInCharacters)
+{
+    TRACE_ALWAYS(L"");
+
+    DECLARE_CONST_UNICODE_STRING(parameterName, DRIVER_PROPERTY_APPLICATION_DEVICE_PROFILES);
+    NTSTATUS ntstatus = HidHideDriverSetMultiStringProperty(&parameterName, buffer, bufferSizeInCharacters);
+    if (!NT_SUCCESS(ntstatus)) return ntstatus;
+
+    WDFCOLLECTION replacement;
+    ntstatus = HidHideDriverCreateCollectionForMultiStringProperty(&parameterName, &replacement);
+    if (!NT_SUCCESS(ntstatus)) return ntstatus;
+
+    WdfWaitLockAcquire(s_criticalSectionLock, NULL);
+    PCONTROL_DEVICE_CONTEXT pControlDeviceContext = ControlDeviceGetContext(s_wdfControlDevice);
+    WDFCOLLECTION previous = pControlDeviceContext->applicationDeviceProfiles;
+    pControlDeviceContext->applicationDeviceProfiles = replacement;
+    WdfWaitLockRelease(s_criticalSectionLock);
+
+    WdfObjectDelete(previous);
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_

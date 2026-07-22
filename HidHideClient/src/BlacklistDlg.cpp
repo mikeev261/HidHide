@@ -297,66 +297,24 @@ void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResul
         if (FALSE == m_Blacklist.SetItemState(hParent, (LVIS_STATE_CHECKBOX_UNCHECKED | (~LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hParent, TVIS_USERMASK))), TVIS_USERMASK)) THROW_WIN32(ERROR_INVALID_PARAMETER);
     }
 
-    // Construct the new black-list for the filter driver
+    // Construct the new black-list using the same physical-device expansion shared by App Profiles.
     HidHide::DeviceInstancePaths deviceInstancePaths;
     for (auto hItem{ m_Blacklist.GetRootItem() }; (nullptr != hItem); hItem = m_Blacklist.GetNextItem(hItem, TVGN_NEXT))
     {
-        // When we have a top-level entry and explore the option for blocking the base container device
-        // This is only valid when (a) there is a base container and (b) all of its child devices are human interface devices and (c) the filter driver is installed on its stack
-        if (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hItem, TVIS_USERMASK)))
-        {
-            // Get the base container device details (just take it from any of the child devices)
-            // Note that the class guid will be GUID_NULL when this is a stand-alone device
-            std::wstring                         baseContainerDeviceInstancePath;
-            GUID                                 baseContainerClassGuid{};
-            size_t                               baseContainerDeviceCount{};
-            HidHide::HidDeviceInformation const* firstChilditemData{};
-            if (auto const hFirstChild{ m_Blacklist.GetChildItem(hItem) }; (nullptr != hFirstChild))
-            {
-                firstChilditemData = reinterpret_cast<HidHide::HidDeviceInformation*>(m_Blacklist.GetItemData(hFirstChild));
-                if (nullptr == firstChilditemData) THROW_WIN32(ERROR_INVALID_PARAMETER);
-                baseContainerDeviceInstancePath = firstChilditemData->baseContainerDeviceInstancePath;
-                baseContainerClassGuid          = firstChilditemData->baseContainerClassGuid;
-                baseContainerDeviceCount        = firstChilditemData->baseContainerDeviceCount;
-            }
-
-            // When there is a base container device then can be block it or is it also providing non human interface devices?
-            // Note that the result will be false when this is a stand-alone device
-            auto theBaseContainerDeviceCanBeBlocked{ false };
-            if ((GUID_DEVCLASS_HIDCLASS == baseContainerClassGuid) || (GUID_DEVCLASS_XUSBCLASS == baseContainerClassGuid))
-            {
-                size_t humanInterfaceDeviceCount{};
-                for (auto hChild{ m_Blacklist.GetChildItem(hItem) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild)) humanInterfaceDeviceCount++;
-                theBaseContainerDeviceCanBeBlocked = (humanInterfaceDeviceCount == baseContainerDeviceCount);
-            }
-
-            // When we can block the base container device then do so
-            if (theBaseContainerDeviceCanBeBlocked)
-            {
-                deviceInstancePaths.emplace(baseContainerDeviceInstancePath);
-            }
-
-            // XInput opens GUID_DEVINTERFACE_XUSB; hide that devnode whenever the whole group is selected from the parent row
-            if ((nullptr != firstChilditemData) && (!firstChilditemData->xusbDeviceInstancePath.empty()))
-            {
-                deviceInstancePaths.emplace(firstChilditemData->xusbDeviceInstancePath);
-            }
-        }
-
-        // Block the individual child devices
+        std::vector<HidHide::HidDeviceInformation> devices;
+        HidHide::DeviceInstancePaths selectedHidPaths;
         for (auto hChild{ m_Blacklist.GetChildItem(hItem) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild))
         {
+            auto const childItemData{ reinterpret_cast<HidHide::HidDeviceInformation*>(m_Blacklist.GetItemData(hChild)) };
+            if (nullptr == childItemData) THROW_WIN32(ERROR_INVALID_PARAMETER);
+            devices.emplace_back(*childItemData);
+
             if (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hChild, TVIS_USERMASK)))
-            {
-                auto const childItemData{ reinterpret_cast<HidHide::HidDeviceInformation*>(m_Blacklist.GetItemData(hChild)) };
-                if (nullptr == childItemData) THROW_WIN32(ERROR_INVALID_PARAMETER);
-                deviceInstancePaths.emplace(childItemData->deviceInstancePath);
-                if (!childItemData->xusbDeviceInstancePath.empty())
-                {
-                    deviceInstancePaths.emplace(childItemData->xusbDeviceInstancePath);
-                }
-            }
+                selectedHidPaths.emplace(childItemData->deviceInstancePath);
         }
+
+        auto const expanded{ HidHide::HidDevicePathsForSelection(devices, selectedHidPaths) };
+        deviceInstancePaths.insert(expanded.begin(), expanded.end());
     }
 
     // Forward the new selection to the filter driver

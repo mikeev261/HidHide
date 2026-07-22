@@ -367,3 +367,22 @@ HidHideClient/RC*
 *.aps
 /Setup
 vcpkg_installed
+
+# MSI Build artifacts & Scripts
+Build_MSI.cmd
+HidHide.msi
+TrustTestCert.ps1
+msi_log.txt
+nefcon.zip
+nefcon_out.txt
+nuget.exe
+official.exe
+official.msi
+official_7z/
+official_cab/
+official_ext/
+pnputil_del.txt
+pnputil_out.txt
+staging/
+wix.zip
+wix/

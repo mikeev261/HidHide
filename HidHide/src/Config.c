@@ -369,6 +369,59 @@ NTSTATUS HidHideProcessIdCheckFullImageNameAgainstWhitelist(WDFWAITLOCK wdfWaitL
 }
 
 _Use_decl_annotations_
+BOOLEAN HidHideProcessIdMatchesApplicationDeviceProfile(WDFWAITLOCK wdfWaitLock, HANDLE processId, WDFCOLLECTION const* wdfCollection, PCUNICODE_STRING deviceInstancePath)
+{
+    TRACE_PERFORMANCE(L"");
+
+    BOOLEAN result = FALSE;
+
+    WdfWaitLockAcquire(wdfWaitLock, NULL);
+
+    PPROCESSIDTREE node = BstLookup(s_ProcessIdToFullLoadImageNameMappingTree, PROCESS_HANDLE_TO_PROCESS_ID(processId));
+    if (NULL != node)
+    {
+        for (ULONG index = 0, size = WdfCollectionGetCount(*wdfCollection); index < size; index++)
+        {
+            UNICODE_STRING entry;
+            WdfStringGetUnicodeString(WdfCollectionGetItem(*wdfCollection, index), &entry);
+
+            USHORT delimiter = 0;
+            const USHORT characterCount = entry.Length / sizeof(WCHAR);
+            for (USHORT character = 0; character < characterCount; character++)
+            {
+                if (L'\t' == entry.Buffer[character])
+                {
+                    delimiter = character;
+                    break;
+                }
+            }
+
+            if ((0 == delimiter) || (delimiter + 1 >= characterCount)) continue;
+
+            UNICODE_STRING imagePath;
+            imagePath.Buffer = entry.Buffer;
+            imagePath.Length = delimiter * sizeof(WCHAR);
+            imagePath.MaximumLength = imagePath.Length;
+
+            UNICODE_STRING profileDevicePath;
+            profileDevicePath.Buffer = &entry.Buffer[delimiter + 1];
+            profileDevicePath.Length = entry.Length - ((delimiter + 1) * sizeof(WCHAR));
+            profileDevicePath.MaximumLength = profileDevicePath.Length;
+
+            if ((0 == RtlCompareUnicodeString(&imagePath, &node->fullImageNameUnicodeString, TRUE))
+                && (0 == RtlCompareUnicodeString(&profileDevicePath, deviceInstancePath, TRUE)))
+            {
+                result = TRUE;
+                break;
+            }
+        }
+    }
+
+    WdfWaitLockRelease(wdfWaitLock);
+    return result;
+}
+
+_Use_decl_annotations_
 VOID HidHideProcessIdsCleanup(WDFWAITLOCK wdfWaitLock)
 {
     TRACE_ALWAYS(L"");

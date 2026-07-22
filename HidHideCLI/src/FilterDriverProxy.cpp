@@ -10,6 +10,8 @@
 
 namespace
 {
+    constexpr auto LEGACY_APP_PROFILES_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles" };
+
     typedef std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)> CloseHandlePtr;
 
     // Get a file handle to the device driver
@@ -90,78 +92,103 @@ namespace
     }
 
     // Get the application profiles
-    HidHide::AppProfiles GetAppProfiles(_In_ HANDLE)
+    HidHide::AppProfiles GetAppProfiles(_In_ HANDLE device)
     {
         TRACE_ALWAYS(L"");
         HidHide::AppProfiles result;
-        HKEY hKey;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL) == ERROR_SUCCESS)
-        {
-            DWORD index = 0;
-            WCHAR valueName[MAX_PATH];
-            DWORD valueNameLen = MAX_PATH;
-            DWORD type = 0;
-            DWORD dataSize = 0;
 
-            while (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, &type, NULL, &dataSize) == ERROR_SUCCESS)
-            {
-                if (type == REG_MULTI_SZ)
-                {
-                    std::vector<WCHAR> buffer(dataSize / sizeof(WCHAR));
-                    valueNameLen = MAX_PATH;
-                    if (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, &type, reinterpret_cast<LPBYTE>(buffer.data()), &dataSize) == ERROR_SUCCESS)
-                    {
-                        HidHide::DeviceInstancePaths devices;
-                        size_t pos = 0;
-                        while (pos < buffer.size() && buffer[pos] != L'\0')
-                        {
-                            std::wstring dev(&buffer[pos]);
-                            devices.insert(dev);
-                            pos += dev.length() + 1;
-                        }
-                        result[std::filesystem::path(valueName)] = devices;
-                    }
-                }
-                index++;
-                valueNameLen = MAX_PATH;
-                dataSize = 0;
-            }
-            RegCloseKey(hKey);
+        DWORD needed{};
+        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_APP_PROFILES), nullptr, 0, nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
+        auto buffer{ std::vector<WCHAR>(needed / sizeof(WCHAR)) };
+        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_APP_PROFILES), nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), &needed, nullptr)) THROW_WIN32_LAST_ERROR;
+
+        for (auto const& entry : HidHide::MultiStringToStringList(buffer))
+        {
+            const auto delimiter{ entry.find(L'\t') };
+            if ((std::wstring::npos == delimiter) || (0 == delimiter)) continue;
+
+            auto const imagePath{ std::filesystem::path(entry.substr(0, delimiter)) };
+            auto& devices{ result[imagePath] };
+            if (delimiter + 1 < entry.size()) devices.emplace(entry.substr(delimiter + 1));
         }
+
         return result;
     }
 
     // Set the application profiles
-    void SetAppProfiles(_In_ HANDLE, _In_ HidHide::AppProfiles const& appProfiles)
+    void SetAppProfiles(_In_ HANDLE device, _In_ HidHide::AppProfiles const& appProfiles)
     {
         TRACE_ALWAYS(L"");
-        HKEY hKey;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+        std::vector<std::wstring> entries;
+        for (auto const& [imagePath, devices] : appProfiles)
         {
-            // Clear existing values
-            DWORD index = 0;
-            WCHAR valueName[MAX_PATH];
-            DWORD valueNameLen = MAX_PATH;
-            while (RegEnumValueW(hKey, index, valueName, &valueNameLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS)
+            if (devices.empty())
             {
-                RegDeleteValueW(hKey, valueName);
-                valueNameLen = MAX_PATH;
+                entries.emplace_back(imagePath.native() + L"\t");
             }
-
-            for (auto const& pair : appProfiles)
+            else
             {
-                std::vector<WCHAR> buffer;
-                for (auto const& dev : pair.second)
-                {
-                    for (WCHAR c : dev) buffer.push_back(c);
-                    buffer.push_back(L'\0');
-                }
-                buffer.push_back(L'\0'); // Double null terminate
-
-                RegSetValueExW(hKey, pair.first.native().c_str(), 0, REG_MULTI_SZ, reinterpret_cast<const BYTE*>(buffer.data()), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)));
+                for (auto const& devicePath : devices)
+                    entries.emplace_back(imagePath.native() + L"\t" + devicePath);
             }
-            RegCloseKey(hKey);
         }
+
+        DWORD needed{};
+        auto buffer{ HidHide::StringListToMultiString(entries) };
+        if (buffer.size() < 2) buffer.emplace_back(L'\0');
+        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_APP_PROFILES), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
+    }
+
+    // Read profiles written by the original GUI implementation. Scanning the full
+    // REG_MULTI_SZ buffer (rather than stopping at the first empty string) also
+    // recovers device entries that were placed after the old empty-string sentinel.
+    HidHide::AppProfiles GetLegacyAppProfiles()
+    {
+        HidHide::AppProfiles result;
+        HKEY key{};
+        if (ERROR_SUCCESS != ::RegOpenKeyExW(HKEY_CURRENT_USER, LEGACY_APP_PROFILES_KEY, 0, KEY_READ, &key)) return result;
+
+        for (DWORD index = 0;; index++)
+        {
+            std::vector<WCHAR> valueName(32768);
+            DWORD valueNameLength{ static_cast<DWORD>(valueName.size()) };
+            DWORD type{};
+            DWORD dataSize{};
+            auto const status{ ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type, nullptr, &dataSize) };
+            if (ERROR_NO_MORE_ITEMS == status) break;
+            if ((ERROR_SUCCESS != status) || (REG_MULTI_SZ != type) || (0 == valueNameLength)) continue;
+
+            std::vector<WCHAR> buffer((dataSize / sizeof(WCHAR)) + 1, L'\0');
+            valueNameLength = static_cast<DWORD>(valueName.size());
+            DWORD readSize{ dataSize };
+            if (ERROR_SUCCESS != ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type,
+                reinterpret_cast<LPBYTE>(buffer.data()), &readSize)) continue;
+
+            std::filesystem::path imagePath{ std::wstring(valueName.data(), valueNameLength) };
+            if (0 != _wcsnicmp(imagePath.native().c_str(), L"\\Device\\", 8))
+            {
+                try
+                {
+                    auto const normalized{ HidHide::FileNameToFullImageName(imagePath) };
+                    if (!normalized.empty()) imagePath = normalized;
+                }
+                catch (...) {}
+            }
+
+            auto& devices{ result[imagePath] };
+            size_t position{};
+            size_t const characterCount{ readSize / sizeof(WCHAR) };
+            while (position < characterCount)
+            {
+                size_t end{ position };
+                while ((end < characterCount) && (L'\0' != buffer[end])) end++;
+                if (end > position) devices.emplace(buffer.data() + position, end - position);
+                position = end + 1;
+            }
+        }
+
+        ::RegCloseKey(key);
+        return result;
     }
 
     // Get the current whitelist inverse state; returns true when the whitelist logic is the inverse (effectively an application backlist)
@@ -209,6 +236,18 @@ namespace HidHide
         , m_Inverse{ ::GetInverse(m_Device.get()) }
     {
         TRACE_ALWAYS(L"");
+
+        if (m_AppProfiles.empty())
+        {
+            auto const legacyProfiles{ ::GetLegacyAppProfiles() };
+            if (!legacyProfiles.empty())
+            {
+                ::SetAppProfiles(m_Device.get(), legacyProfiles);
+                m_AppProfiles = legacyProfiles;
+                auto const deleteStatus{ ::RegDeleteTreeW(HKEY_CURRENT_USER, LEGACY_APP_PROFILES_KEY) };
+                if ((ERROR_SUCCESS != deleteStatus) && (ERROR_FILE_NOT_FOUND != deleteStatus)) THROW_WIN32(deleteStatus);
+            }
+        }
 
         if (auto const fullImageName{ HidHide::FileNameToFullImageName(HidHide::ModuleFileName()) }; !fullImageName.empty())
         {
@@ -348,6 +387,22 @@ namespace HidHide
     }
 
     _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileAdd(FullImageName const& fullImageName)
+    {
+        TRACE_ALWAYS(L"");
+        if (m_AppProfiles.try_emplace(fullImageName).second && m_WriteThrough)
+            ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+    }
+
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileDelete(FullImageName const& fullImageName)
+    {
+        TRACE_ALWAYS(L"");
+        if (0 != m_AppProfiles.erase(fullImageName) && m_WriteThrough)
+            ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+    }
+
+    _Use_decl_annotations_
     void FilterDriverProxy::AppProfileAddEntry(FullImageName const& fullImageName, DeviceInstancePath const& deviceInstancePath)
     {
         TRACE_ALWAYS(L"");
@@ -365,7 +420,6 @@ namespace HidHide
         {
             if (it->second.erase(deviceInstancePath) > 0)
             {
-                if (it->second.empty()) m_AppProfiles.erase(it);
                 if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
             }
         }

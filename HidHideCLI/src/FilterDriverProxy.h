@@ -66,6 +66,12 @@ namespace HidHide
         // Set the app profiles
         void SetAppProfiles(_In_ AppProfiles const& appProfiles);
 
+        // Create an empty application profile.
+        void AppProfileAdd(_In_ FullImageName const& fullImageName);
+
+        // Delete an application profile and all of its device entries.
+        void AppProfileDelete(_In_ FullImageName const& fullImageName);
+
         // Add a device to an app profile
         void AppProfileAddEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
 

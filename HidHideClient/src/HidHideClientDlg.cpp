@@ -7,8 +7,6 @@
 #include "FilterDriverProxy.h"
 #include "Utils.h"
 #include "Logging.h"
-#include <TlHelp32.h>
-#include <algorithm>
 
 #pragma warning(push)
 #pragma warning(disable: 26454 28213) // Warnings caused by Microsoft MFC macros
@@ -17,7 +15,6 @@ BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
     ON_WM_QUERYDRAGICON()
     ON_NOTIFY(TCN_SELCHANGE, IDC_TAB_APPLICATION, &CHidHideClientDlg::OnTcnSelchangeTabApplication)
     ON_WM_SHOWWINDOW()
-    ON_WM_TIMER()
 END_MESSAGE_MAP()
 #pragma warning(pop)
 
@@ -94,9 +91,6 @@ BOOL CHidHideClientDlg::OnInitDialog()
     m_AppProfilesDlg.Create(IDD_DIALOG_APP_PROFILES, m_TabApplication.GetWindow(IDD_DIALOG_APP_PROFILES));
     m_AppProfilesDlg.MoveWindow(clientRect);
 
-    // Start background polling for App Profiles wrapper
-    SetTimer(1, 1000, NULL);
-
     return (TRUE);
 }
 
@@ -153,6 +147,7 @@ void CHidHideClientDlg::ResyncTabDialogVisibilityState()
         m_WhitelistDlg.ShowWindow(SW_HIDE);
         m_BlacklistDlg.ShowWindow(SW_HIDE);
         m_AppProfilesDlg.ShowWindow(SW_SHOW);
+        m_DropTarget.SetRedirectionTarget(m_AppProfilesDlg);
         break;
     }
 }
@@ -173,123 +168,5 @@ void CHidHideClientDlg::OnShowWindow(BOOL bShow, UINT nStatus)
     CDialogEx::OnShowWindow(bShow, nStatus);
     m_TabApplication.SetCurSel(0);
     ResyncTabDialogVisibilityState();
-}
-
-void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
-{
-    if (nIDEvent == 1)
-    {
-        try
-        {
-            auto profiles = m_FilterDriverProxy->GetAppProfiles();
-            if (profiles.empty())
-            {
-                CDialogEx::OnTimer(nIDEvent);
-                return;
-            }
-
-            // Build a lowercase lookup map for case-insensitive matching (full path and filename-only)
-            std::map<std::wstring, HidHide::DeviceInstancePaths> profilesByFullPath;
-            std::map<std::wstring, HidHide::DeviceInstancePaths> profilesByFilename;
-            for (auto const& [appPath, devices] : profiles)
-            {
-                std::wstring lower = appPath.native();
-                std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
-                profilesByFullPath[lower] = devices;
-
-                // Also index by just the filename for anti-cheat protected processes
-                std::wstring filename = appPath.filename().native();
-                std::transform(filename.begin(), filename.end(), filename.begin(), ::towlower);
-                profilesByFilename[filename] = devices;
-            }
-
-            // Scan all running processes for a match
-            // Use CreateToolhelp32Snapshot which can see protected process names
-            HidHide::DeviceInstancePaths matchedDevices;
-            bool found = false;
-
-            HANDLE hSnapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if (hSnapshot != INVALID_HANDLE_VALUE)
-            {
-                PROCESSENTRY32W pe;
-                pe.dwSize = sizeof(pe);
-                if (::Process32FirstW(hSnapshot, &pe))
-                {
-                    do
-                    {
-                        if (found) break;
-
-                        // First try to get the full path
-                        HANDLE hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
-                        if (hProcess)
-                        {
-                            WCHAR exePath[MAX_PATH];
-                            DWORD size = MAX_PATH;
-                            if (::QueryFullProcessImageNameW(hProcess, 0, exePath, &size))
-                            {
-                                std::wstring exeLower(exePath);
-                                std::transform(exeLower.begin(), exeLower.end(), exeLower.begin(), ::towlower);
-
-                                auto it = profilesByFullPath.find(exeLower);
-                                if (it != profilesByFullPath.end())
-                                {
-                                    matchedDevices = it->second;
-                                    found = true;
-                                }
-                            }
-                            ::CloseHandle(hProcess);
-                        }
-
-                        // If full path didn't match, fall back to filename-only matching
-                        // This handles anti-cheat protected processes where OpenProcess fails
-                        if (!found)
-                        {
-                            std::wstring procName(pe.szExeFile);
-                            std::transform(procName.begin(), procName.end(), procName.begin(), ::towlower);
-
-                            auto it = profilesByFilename.find(procName);
-                            if (it != profilesByFilename.end())
-                            {
-                                matchedDevices = it->second;
-                                found = true;
-                            }
-                        }
-                    } while (::Process32NextW(hSnapshot, &pe));
-                }
-                ::CloseHandle(hSnapshot);
-            }
-
-            // Track state to avoid redundant driver calls
-            static bool wasProfileActive = false;
-            static HidHide::DeviceInstancePaths lastAppliedDevices;
-
-            if (found)
-            {
-                if (!wasProfileActive || matchedDevices != lastAppliedDevices)
-                {
-                    // Save the original blacklist on first activation
-                    if (!wasProfileActive)
-                    {
-                        m_SavedBlacklist = m_FilterDriverProxy->GetBlacklist();
-                        m_SavedActiveState = m_FilterDriverProxy->GetActive();
-                    }
-                    m_FilterDriverProxy->SetBlacklist(matchedDevices);
-                    m_FilterDriverProxy->SetActive(true);
-                    lastAppliedDevices = matchedDevices;
-                    wasProfileActive = true;
-                }
-            }
-            else if (wasProfileActive)
-            {
-                // Game closed — restore original state
-                m_FilterDriverProxy->SetBlacklist(m_SavedBlacklist);
-                m_FilterDriverProxy->SetActive(m_SavedActiveState);
-                lastAppliedDevices.clear();
-                wasProfileActive = false;
-            }
-        }
-        catch (...) {}
-    }
-    CDialogEx::OnTimer(nIDEvent);
 }
 

@@ -28,4 +28,10 @@ namespace HidHide
 
     // Get the device instance paths of the HID devices (present or not) and associated device information and cluster/group them on their device friendly names
     FriendlyNamesAndHidDeviceInformation HidDevices(_In_ bool gamingDevicesOnly);
+
+    // Expand selected HID child paths to every path required to hide those interfaces correctly,
+    // including associated XInput paths and a safe base-container path when the whole device is selected.
+    std::set<DeviceInstancePath> HidDevicePathsForSelection(
+        _In_ std::vector<HidDeviceInformation> const& devices,
+        _In_ std::set<DeviceInstancePath> const& selectedHidDevicePaths);
 }

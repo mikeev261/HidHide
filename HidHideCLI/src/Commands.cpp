@@ -114,6 +114,8 @@ namespace HidHide
             { L"help",         { StringTable(IDS_CLI_SYNTAX_NO_ARGUMENTS),  StringTable(IDS_CLI_HELP),         std::bind(&CommandInterpreter::Help,        this, std::placeholders::_1), std::bind(&CommandInterpreter::ValNoArguments, this, std::placeholders::_1) } },
             { L"version",      { StringTable(IDS_CLI_SYNTAX_NO_ARGUMENTS),  StringTable(IDS_CLI_VERSION),      std::bind(&CommandInterpreter::Version,     this, std::placeholders::_1), std::bind(&CommandInterpreter::ValNoArguments, this, std::placeholders::_1) } },
             { L"app-profile-list", { L"", L"List the app profiles", std::bind(&CommandInterpreter::AppProfileList, this, std::placeholders::_1), std::bind(&CommandInterpreter::ValNoArguments, this, std::placeholders::_1) } },
+            { L"app-profile-create", { L"<path>", L"Create an empty app profile", std::bind(&CommandInterpreter::AppProfileCreate, this, std::placeholders::_1), std::bind(&CommandInterpreter::ValOneFullyQualifiedExecutablePath, this, std::placeholders::_1) } },
+            { L"app-profile-delete", { L"<path>", L"Delete an app profile", std::bind(&CommandInterpreter::AppProfileDelete, this, std::placeholders::_1), std::bind(&CommandInterpreter::ValOneFullyQualifiedExecutablePath, this, std::placeholders::_1) } },
             { L"app-profile-add",  { L"<path> <device>", L"Add a device to an app profile", std::bind(&CommandInterpreter::AppProfileAdd, this, std::placeholders::_1), std::bind(&CommandInterpreter::ValAppProfileCommand, this, std::placeholders::_1) } },
             { L"app-profile-del",  { L"<path> <device>", L"Delete a device from an app profile", std::bind(&CommandInterpreter::AppProfileDel, this, std::placeholders::_1), std::bind(&CommandInterpreter::ValAppProfileCommand, this, std::placeholders::_1) } }
           }
@@ -262,11 +264,28 @@ namespace HidHide
         TRACE_ALWAYS(L"");
         for (auto const& [appPath, devices] : m_FilterDriverProxy.GetAppProfiles())
         {
+            auto const fileName{ HidHide::FullImageNameToFileName(appPath) };
+            auto const displayPath{ fileName.empty() ? appPath : fileName };
+            if (devices.empty()) std::wcout << displayPath.native() << L"|" << std::endl;
             for (auto const& device : devices)
             {
-                std::wcout << appPath.native() << L"|" << device << std::endl;
+                std::wcout << displayPath.native() << L"|" << device << std::endl;
             }
         }
+    }
+
+    _Use_decl_annotations_
+    void CommandInterpreter::AppProfileCreate(Args const& args)
+    {
+        TRACE_ALWAYS(L"");
+        m_FilterDriverProxy.AppProfileAdd(HidHide::FileNameToFullImageName(args.at(1)));
+    }
+
+    _Use_decl_annotations_
+    void CommandInterpreter::AppProfileDelete(Args const& args)
+    {
+        TRACE_ALWAYS(L"");
+        m_FilterDriverProxy.AppProfileDelete(HidHide::FileNameToFullImageName(args.at(1)));
     }
 
     _Use_decl_annotations_

@@ -17,79 +17,10 @@ namespace
     constexpr auto RUN_KEY{ L"Software\\Microsoft\\Windows\\CurrentVersion\\Run" };
     constexpr auto RUN_VALUE{ L"HidHide App Profiles" };
 
-    struct RunningApplication
+    std::wstring Normalize(_In_ std::wstring value)
     {
-        HidHide::FullImageName fullImageName;
-        std::wstring fileName;
-        bool hasFullPath{};
-    };
-
-    std::vector<RunningApplication> RunningApplications()
-    {
-        std::vector<RunningApplication> result;
-        HANDLE const snapshot{ ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if (INVALID_HANDLE_VALUE == snapshot) return result;
-
-        PROCESSENTRY32W processEntry{};
-        processEntry.dwSize = sizeof(processEntry);
-        if (::Process32FirstW(snapshot, &processEntry))
-        {
-            do
-            {
-                RunningApplication running{};
-                running.fileName = processEntry.szExeFile;
-
-                HANDLE const process{ ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processEntry.th32ProcessID) };
-                if (nullptr != process)
-                {
-                    std::vector<WCHAR> path(32768);
-                    DWORD size{ static_cast<DWORD>(path.size()) };
-                    if (::QueryFullProcessImageNameW(process, 0, path.data(), &size))
-                    {
-                        try
-                        {
-                            running.fullImageName = HidHide::FileNameToFullImageName(std::filesystem::path(std::wstring(path.data(), size)));
-                            running.hasFullPath = !running.fullImageName.empty();
-                        }
-                        catch (...) {}
-                    }
-                    ::CloseHandle(process);
-                }
-
-                result.emplace_back(std::move(running));
-            } while (::Process32NextW(snapshot, &processEntry));
-        }
-
-        ::CloseHandle(snapshot);
-        return result;
-    }
-
-    bool SamePath(_In_ std::filesystem::path const& lhs, _In_ std::filesystem::path const& rhs)
-    {
-        return 0 == _wcsicmp(lhs.native().c_str(), rhs.native().c_str());
-    }
-
-    bool ProfileIsRunning(_In_ HidHide::FullImageName const& profile, _In_ std::vector<RunningApplication> const& runningApplications,
-        _In_ std::map<std::wstring, size_t> const& profileFileNameCounts)
-    {
-        for (auto const& running : runningApplications)
-        {
-            if (running.hasFullPath && SamePath(profile, running.fullImageName)) return true;
-        }
-
-        // Some protected processes reject path queries. Only fall back to a file-name
-        // match when that name identifies exactly one configured profile.
-        auto const fileName{ profile.filename().native() };
-        auto normalizedFileName{ fileName };
-        std::transform(normalizedFileName.begin(), normalizedFileName.end(), normalizedFileName.begin(), ::towlower);
-        auto const count{ profileFileNameCounts.find(normalizedFileName) };
-        if ((profileFileNameCounts.end() == count) || (1 != count->second)) return false;
-
-        for (auto const& running : runningApplications)
-        {
-            if (!running.hasFullPath && (0 == _wcsicmp(fileName.c_str(), running.fileName.c_str()))) return true;
-        }
-        return false;
+        std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+        return value;
     }
 
     void WriteDword(_In_ HKEY key, _In_ PCWSTR name, _In_ DWORD value)
@@ -130,12 +61,15 @@ namespace
 }
 
 _Use_decl_annotations_
-CProfileManager::CProfileManager(HidHide::FilterDriverProxy& filterDriverProxy) noexcept
+CProfileManager::CProfileManager(HidHide::FilterDriverProxy& filterDriverProxy)
     : m_FilterDriverProxy(filterDriverProxy)
-{}
+{
+    m_Worker = std::thread(&CProfileManager::WorkerMain, this);
+}
 
 CProfileManager::~CProfileManager()
 {
+    StopWorker();
     Stop();
 }
 
@@ -161,29 +95,141 @@ void CProfileManager::Recover()
 }
 
 _Use_decl_annotations_
-HidHide::DeviceInstancePaths CProfileManager::ActiveProfileDevices(size_t& activeProfileCount) const
+std::vector<CProfileManager::PreparedProfile> CProfileManager::PrepareProfiles(HidHide::AppProfiles const& profiles)
 {
-    auto const profiles{ m_FilterDriverProxy.GetAppProfiles() };
-    auto const runningApplications{ RunningApplications() };
-
-    std::map<std::wstring, size_t> profileFileNameCounts;
+    std::vector<PreparedProfile> result;
+    result.reserve(profiles.size());
     for (auto const& [profile, devices] : profiles)
     {
-        UNREFERENCED_PARAMETER(devices);
-        auto fileName{ profile.filename().native() };
-        std::transform(fileName.begin(), fileName.end(), fileName.begin(), ::towlower);
-        profileFileNameCounts[fileName]++;
-    }
-
-    HidHide::DeviceInstancePaths result;
-    activeProfileCount = 0;
-    for (auto const& [profile, devices] : profiles)
-    {
-        if (!ProfileIsRunning(profile, runningApplications, profileFileNameCounts)) continue;
-        activeProfileCount++;
-        result.insert(devices.begin(), devices.end());
+        PreparedProfile prepared{};
+        prepared.profile = profile;
+        prepared.normalizedFileName = Normalize(profile.filename().native());
+        prepared.devices = devices;
+        try
+        {
+            prepared.displayPath = HidHide::FullImageNameToFileName(profile);
+        }
+        catch (...) {}
+        result.emplace_back(std::move(prepared));
     }
     return result;
+}
+
+_Use_decl_annotations_
+CProfileManager::ScanResult CProfileManager::ScanProfiles(std::vector<PreparedProfile> const& profiles)
+{
+    ScanResult result;
+    if (profiles.empty()) return result;
+
+    std::map<std::wstring, std::vector<size_t>> profilesByFileName;
+    for (size_t index{}; index < profiles.size(); index++)
+        profilesByFileName[profiles[index].normalizedFileName].emplace_back(index);
+
+    HANDLE const snapshot{ ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if (INVALID_HANDLE_VALUE == snapshot) return result;
+
+    PROCESSENTRY32W processEntry{};
+    processEntry.dwSize = sizeof(processEntry);
+    if (::Process32FirstW(snapshot, &processEntry))
+    {
+        do
+        {
+            auto const candidates{ profilesByFileName.find(Normalize(processEntry.szExeFile)) };
+            if (profilesByFileName.end() == candidates) continue;
+
+            bool hasFullPath{};
+            std::filesystem::path processPath;
+            HANDLE const process{ ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processEntry.th32ProcessID) };
+            if (nullptr != process)
+            {
+                std::vector<WCHAR> path(32768);
+                DWORD size{ static_cast<DWORD>(path.size()) };
+                if (::QueryFullProcessImageNameW(process, 0, path.data(), &size))
+                {
+                    processPath = std::wstring(path.data(), size);
+                    hasFullPath = true;
+                }
+                ::CloseHandle(process);
+            }
+
+            if (hasFullPath)
+            {
+                for (auto const index : candidates->second)
+                {
+                    auto const& prepared{ profiles[index] };
+                    if (!prepared.displayPath.empty() && (0 == _wcsicmp(prepared.displayPath.native().c_str(), processPath.native().c_str())))
+                        result.activeProfiles.emplace(prepared.profile);
+                }
+            }
+            else if (1 == candidates->second.size())
+            {
+                // Some protected processes reject path queries. Fall back to the
+                // executable name only when it identifies one configured profile.
+                result.activeProfiles.emplace(profiles[candidates->second.front()].profile);
+            }
+        } while (::Process32NextW(snapshot, &processEntry));
+    }
+
+    ::CloseHandle(snapshot);
+
+    for (auto const& prepared : profiles)
+        if (result.activeProfiles.end() != result.activeProfiles.find(prepared.profile))
+            result.activeDevices.insert(prepared.devices.begin(), prepared.devices.end());
+
+    return result;
+}
+
+void CProfileManager::WorkerMain() noexcept
+{
+    try
+    {
+        std::vector<PreparedProfile> preparedProfiles;
+        std::uint64_t preparedRevision{ static_cast<std::uint64_t>(-1) };
+        std::unique_lock<std::mutex> lock(m_WorkerMutex);
+
+        while (!m_StopRequested)
+        {
+            m_WorkerWake.wait_for(lock, std::chrono::milliseconds(500), [this, preparedRevision]
+            {
+                return m_StopRequested || (m_ProfileRevision != preparedRevision);
+            });
+            if (m_StopRequested) break;
+
+            if (preparedRevision != m_ProfileRevision)
+            {
+                auto const profiles{ m_PendingProfiles };
+                preparedRevision = m_ProfileRevision;
+                lock.unlock();
+                preparedProfiles = PrepareProfiles(profiles);
+                lock.lock();
+                if (m_StopRequested) break;
+                if (preparedRevision != m_ProfileRevision) continue;
+            }
+
+            lock.unlock();
+            auto result{ ScanProfiles(preparedProfiles) };
+            lock.lock();
+            if (m_StopRequested) break;
+            if (preparedRevision != m_ProfileRevision) continue;
+            m_CompletedResult = std::move(result);
+            m_CompletedSequence++;
+        }
+    }
+    catch (...)
+    {
+        // A failed scan must not terminate the application. Keep the last known
+        // state; this path is reserved for unexpected failures such as allocation.
+    }
+}
+
+void CProfileManager::StopWorker() noexcept
+{
+    {
+        std::lock_guard<std::mutex> lock(m_WorkerMutex);
+        m_StopRequested = true;
+    }
+    m_WorkerWake.notify_one();
+    if (m_Worker.joinable()) m_Worker.join();
 }
 
 void CProfileManager::SaveRecoveryState() const
@@ -220,6 +266,7 @@ void CProfileManager::RestoreBaseline()
     m_FilterDriverProxy.SetActive(m_BaselineActive);
     m_LastProfileDevices.clear();
     m_LastAppliedBlacklist.clear();
+    m_ActiveProfiles.clear();
     m_ActiveProfileCount = 0;
     m_OverrideActive = false;
     ClearRecoveryState();
@@ -227,11 +274,36 @@ void CProfileManager::RestoreBaseline()
 
 void CProfileManager::Tick()
 {
-    ConfigureAutoStart(!m_FilterDriverProxy.GetAppProfiles().empty());
+    auto const profiles{ m_FilterDriverProxy.GetAppProfiles() };
+    if (!m_HasSubmittedProfiles || (profiles != m_SubmittedProfiles))
+    {
+        ConfigureAutoStart(!profiles.empty());
+        m_SubmittedProfiles = profiles;
+        m_HasSubmittedProfiles = true;
+        {
+            std::lock_guard<std::mutex> lock(m_WorkerMutex);
+            m_PendingProfiles = profiles;
+            m_ProfileRevision++;
+        }
+        m_WorkerWake.notify_one();
+    }
 
-    size_t activeProfileCount{};
-    auto const activeDevices{ ActiveProfileDevices(activeProfileCount) };
-    m_ActiveProfileCount = activeProfileCount;
+    ScanResult result;
+    {
+        std::lock_guard<std::mutex> lock(m_WorkerMutex);
+        if (m_AppliedSequence == m_CompletedSequence) return;
+        result = m_CompletedResult;
+        m_AppliedSequence = m_CompletedSequence;
+    }
+    ApplyScanResult(result);
+}
+
+_Use_decl_annotations_
+void CProfileManager::ApplyScanResult(ScanResult const& result)
+{
+    auto const& activeDevices{ result.activeDevices };
+    m_ActiveProfiles = result.activeProfiles;
+    m_ActiveProfileCount = m_ActiveProfiles.size();
 
     if (m_OverrideActive)
     {
@@ -272,6 +344,12 @@ void CProfileManager::Tick()
 
     m_LastProfileDevices = activeDevices;
     m_LastAppliedBlacklist = std::move(effective);
+}
+
+_Use_decl_annotations_
+bool CProfileManager::ProfileIsActive(HidHide::FullImageName const& profile) const noexcept
+{
+    return m_ActiveProfiles.end() != m_ActiveProfiles.find(profile);
 }
 
 _Use_decl_annotations_

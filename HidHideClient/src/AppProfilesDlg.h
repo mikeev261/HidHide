@@ -43,8 +43,6 @@ private:
     std::filesystem::path DisplayPath(_In_ HidHide::FullImageName const& fullImageName) const;
     std::wstring ParentLabel(_In_ std::wstring const& friendlyName, _In_ std::vector<HidHide::HidDeviceInformation> const& devices, _In_ bool duplicateFriendlyName) const;
     std::wstring ChildLabel(_In_ HidHide::HidDeviceInformation const& device, _In_ bool duplicateUsage) const;
-    bool IsApplicationRunning(_In_ std::filesystem::path const& applicationPath) const;
-
     CListBox m_AppsList;
     CTreeCtrl m_DevicesTree;
     CButton m_GamingOnly;

@@ -25,6 +25,7 @@ public:
 
     // Allow child dialogs access to the shared filter driver proxy
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
+    bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
 
 private:
 
@@ -102,6 +103,7 @@ private:
     bool m_StartHidden{};
     bool m_Exiting{};
     bool m_HideNoticeShown{};
+    size_t m_LastTrayProfileCount{ static_cast<size_t>(-1) };
 
     void AddTrayIcon();
     void RemoveTrayIcon() noexcept;

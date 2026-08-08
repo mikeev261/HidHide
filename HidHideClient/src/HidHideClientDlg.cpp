@@ -14,7 +14,7 @@ UINT const WM_TASKBAR_CREATED{ ::RegisterWindowMessageW(L"TaskbarCreated") };
 namespace
 {
     constexpr UINT_PTR PROFILE_TIMER_ID{ 42 };
-    constexpr UINT PROFILE_TIMER_INTERVAL_MS{ 500 };
+    constexpr UINT PROFILE_TIMER_INTERVAL_MS{ 100 };
     constexpr UINT WM_TRAY_ICON{ WM_APP + 1 };
     constexpr UINT WM_HIDE_AFTER_START{ WM_APP + 2 };
     constexpr UINT TRAY_COMMAND_SHOW{ 1 };
@@ -58,6 +58,12 @@ CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent, bool startHidden)
 HidHide::FilterDriverProxy& CHidHideClientDlg::FilterDriverProxy() noexcept
 {
     return (*m_FilterDriverProxy.get());
+}
+
+_Use_decl_annotations_
+bool CHidHideClientDlg::ProfileIsActive(HidHide::FullImageName const& profile) const noexcept
+{
+    return m_ProfileManager && m_ProfileManager->ProfileIsActive(profile);
 }
 
 _Use_decl_annotations_
@@ -125,6 +131,7 @@ BOOL CHidHideClientDlg::OnInitDialog()
 
 void CHidHideClientDlg::AddTrayIcon()
 {
+    m_LastTrayProfileCount = static_cast<size_t>(-1);
     m_NotifyIcon = {};
     m_NotifyIcon.cbSize = sizeof(m_NotifyIcon);
     m_NotifyIcon.hWnd = m_hWnd;
@@ -165,13 +172,16 @@ void CHidHideClientDlg::ShowFromTray()
 void CHidHideClientDlg::UpdateTrayTooltip()
 {
     if (!m_ProfileManager) return;
+    auto const activeProfileCount{ m_ProfileManager->ActiveProfileCount() };
+    if (m_LastTrayProfileCount == activeProfileCount) return;
+
     std::wostringstream text;
     text << L"HidHide App Profiles";
-    if (0 != m_ProfileManager->ActiveProfileCount())
-        text << L" — " << m_ProfileManager->ActiveProfileCount() << L" active";
+    if (0 != activeProfileCount) text << L" — " << activeProfileCount << L" active";
     m_NotifyIcon.uFlags = NIF_TIP;
     wcsncpy_s(m_NotifyIcon.szTip, text.str().c_str(), _TRUNCATE);
     ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
+    m_LastTrayProfileCount = activeProfileCount;
 }
 
 void CHidHideClientDlg::OnPaint()

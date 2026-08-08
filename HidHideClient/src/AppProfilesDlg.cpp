@@ -7,8 +7,6 @@
 #include "Utils.h"
 #include "Volume.h"
 
-#include <TlHelp32.h>
-
 namespace
 {
     std::wstring InterfaceSuffix(std::wstring const& deviceInstancePath)
@@ -271,46 +269,11 @@ void CAppProfilesDlg::UpdateStatus()
             if (found->second.end() != found->second.find(device.second->deviceInstancePath)) selectedInterfaces++;
     }
 
-    bool const running{ IsApplicationRunning(DisplayPath(*selectedProfile)) };
+    bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
     std::wostringstream status;
     status << (running ? L"Running" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
     if (!FilterDriverProxy().GetActive()) status << L" \u2022 hiding disabled";
     m_ProfileStatus.SetWindowTextW(status.str().c_str());
-}
-
-_Use_decl_annotations_
-bool CAppProfilesDlg::IsApplicationRunning(std::filesystem::path const& applicationPath) const
-{
-    auto const snapshot{ ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if (INVALID_HANDLE_VALUE == snapshot) return false;
-
-    bool result{ false };
-    PROCESSENTRY32W processEntry{};
-    processEntry.dwSize = sizeof(processEntry);
-    if (::Process32FirstW(snapshot, &processEntry))
-    {
-        do
-        {
-            if (0 != _wcsicmp(processEntry.szExeFile, applicationPath.filename().c_str())) continue;
-
-            HANDLE const process{ ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processEntry.th32ProcessID) };
-            if (nullptr == process)
-            {
-                result = true;
-                break;
-            }
-
-            std::vector<WCHAR> path(UNICODE_STRING_MAX_CHARS);
-            DWORD size{ static_cast<DWORD>(path.size()) };
-            result = ::QueryFullProcessImageNameW(process, 0, path.data(), &size)
-                && (0 == _wcsicmp(path.data(), applicationPath.c_str()));
-            ::CloseHandle(process);
-            if (result) break;
-        } while (::Process32NextW(snapshot, &processEntry));
-    }
-
-    ::CloseHandle(snapshot);
-    return result;
 }
 
 void CAppProfilesDlg::OnLbnSelchangeListApps()

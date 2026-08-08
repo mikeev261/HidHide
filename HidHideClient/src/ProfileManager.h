@@ -3,10 +3,16 @@
 
 #include "FilterDriverProxy.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <thread>
+
 class CProfileManager
 {
 public:
-    explicit CProfileManager(_In_ HidHide::FilterDriverProxy& filterDriverProxy) noexcept;
+    explicit CProfileManager(_In_ HidHide::FilterDriverProxy& filterDriverProxy);
     ~CProfileManager();
 
     CProfileManager(_In_ CProfileManager const&) = delete;
@@ -22,10 +28,29 @@ public:
     void Stop() noexcept;
 
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
+    bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
     bool OverrideActive() const noexcept { return m_OverrideActive; }
 
 private:
-    HidHide::DeviceInstancePaths ActiveProfileDevices(_Out_ size_t& activeProfileCount) const;
+    struct PreparedProfile
+    {
+        HidHide::FullImageName profile;
+        std::filesystem::path displayPath;
+        std::wstring normalizedFileName;
+        HidHide::DeviceInstancePaths devices;
+    };
+
+    struct ScanResult
+    {
+        HidHide::FullImageNames activeProfiles;
+        HidHide::DeviceInstancePaths activeDevices;
+    };
+
+    static std::vector<PreparedProfile> PrepareProfiles(_In_ HidHide::AppProfiles const& profiles);
+    static ScanResult ScanProfiles(_In_ std::vector<PreparedProfile> const& profiles);
+    void WorkerMain() noexcept;
+    void StopWorker() noexcept;
+    void ApplyScanResult(_In_ ScanResult const& result);
     void SaveRecoveryState() const;
     void ClearRecoveryState() const noexcept;
     void RestoreBaseline();
@@ -38,4 +63,17 @@ private:
     bool m_BaselineActive{ false };
     bool m_OverrideActive{ false };
     size_t m_ActiveProfileCount{};
+    HidHide::FullImageNames m_ActiveProfiles;
+
+    HidHide::AppProfiles m_SubmittedProfiles;
+    bool m_HasSubmittedProfiles{};
+    std::mutex m_WorkerMutex;
+    std::condition_variable m_WorkerWake;
+    HidHide::AppProfiles m_PendingProfiles;
+    std::uint64_t m_ProfileRevision{};
+    std::uint64_t m_CompletedSequence{};
+    std::uint64_t m_AppliedSequence{};
+    ScanResult m_CompletedResult;
+    bool m_StopRequested{};
+    std::thread m_Worker;
 };

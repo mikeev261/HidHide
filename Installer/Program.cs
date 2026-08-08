@@ -14,8 +14,12 @@ public static class Program
 {
     const string Manufacturer = "mikeev261";
 
-    /// <summary>Must match dep:Provides Key suffix expectations / upgrade story.</summary>
-    static readonly Guid UpgradeCode = new("8822CC70-E2A5-4CB7-8F14-E27101150A1D");
+    /// <summary>
+    /// Identifies only the user-mode companion product family. This must never match
+    /// the official HidHide package, or MSI major-upgrade detection will uninstall
+    /// the signed driver package while installing the companion.
+    /// </summary>
+    static readonly Guid UpgradeCode = new("7078E839-3A07-4FA9-BC3A-7677356C88CF");
 
     internal const string EnvStaging = "HIDHIDE_INSTALLER_STAGING";
     internal const string EnvOut = "HIDHIDE_INSTALLER_OUT";

@@ -92,11 +92,17 @@ The expanded list may mark entries as *absent* or *denied*. *absent* entries app
 These are residual entries in the caches of the operating system, and can be cleaned-up using utilities like *Device Cleanup Tool*.
 *denied* entries appear for hidden devices when the configuration utility itself is not whitelisted.
 
-The *App Profiles* tab hides a different set of physical devices from each configured executable. Add an executable with
-*+* (or drag it onto the tab), select the physical devices it should not see, and leave the configuration utility whenever
-you are done. Profiles are enforced by the driver against each requesting process, so they remain active when the utility
-is closed and multiple profiled applications can run at the same time. Device hiding must still be enabled globally, and
-an application on the *Applications* whitelist retains access to every hidden device.
+The *App Profiles* tab applies a different hidden-device set while each configured executable is running. Add an executable
+with *+* (or drag it onto the tab) and select the physical devices to hide. Closing the window leaves the profile manager
+running in the notification area; use its tray menu to reopen it or exit and restore the normal Devices-tab configuration.
+The manager starts automatically at sign-in whenever profiles are configured. If multiple profiled applications run at the
+same time, their selected devices are combined. This user-mode design reuses the separately installed Microsoft-signed
+HidHide driver and remains compatible with Secure Boot.
+
+The signed driver exposes a single global hidden-device list, so an active profile temporarily affects every non-whitelisted
+application, not only the executable that activated it. The manager preserves the normal device list, adds active-profile
+devices to it, restores it when the last profile exits, and records recovery data before each override. An application on
+the *Applications* whitelist retains access to every hidden device.
 
 Physical devices are the primary rows in the profile tree. Expand one only when interface-level control is needed. The
 *Gaming devices only* filter is enabled by default, disconnected devices are hidden by default, and selections excluded by

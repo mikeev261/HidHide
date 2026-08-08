@@ -8,6 +8,19 @@
 #include "Utils.h"
 #include "Logging.h"
 
+UINT const WM_HIDHIDE_SHOW_MANAGER{ ::RegisterWindowMessageW(L"HidHide.AppProfiles.ShowManager") };
+UINT const WM_TASKBAR_CREATED{ ::RegisterWindowMessageW(L"TaskbarCreated") };
+
+namespace
+{
+    constexpr UINT_PTR PROFILE_TIMER_ID{ 42 };
+    constexpr UINT PROFILE_TIMER_INTERVAL_MS{ 500 };
+    constexpr UINT WM_TRAY_ICON{ WM_APP + 1 };
+    constexpr UINT WM_HIDE_AFTER_START{ WM_APP + 2 };
+    constexpr UINT TRAY_COMMAND_SHOW{ 1 };
+    constexpr UINT TRAY_COMMAND_EXIT{ 2 };
+}
+
 #pragma warning(push)
 #pragma warning(disable: 26454 28213) // Warnings caused by Microsoft MFC macros
 BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
@@ -15,19 +28,28 @@ BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
     ON_WM_QUERYDRAGICON()
     ON_NOTIFY(TCN_SELCHANGE, IDC_TAB_APPLICATION, &CHidHideClientDlg::OnTcnSelchangeTabApplication)
     ON_WM_SHOWWINDOW()
+    ON_WM_TIMER()
+    ON_WM_CLOSE()
+    ON_WM_DESTROY()
+    ON_MESSAGE(WM_TRAY_ICON, &CHidHideClientDlg::OnTrayIcon)
+    ON_MESSAGE(WM_HIDE_AFTER_START, &CHidHideClientDlg::OnHideAfterStart)
+    ON_REGISTERED_MESSAGE(WM_HIDHIDE_SHOW_MANAGER, &CHidHideClientDlg::OnShowManager)
+    ON_REGISTERED_MESSAGE(WM_TASKBAR_CREATED, &CHidHideClientDlg::OnTaskbarCreated)
 END_MESSAGE_MAP()
 #pragma warning(pop)
 
 _Use_decl_annotations_
-CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent)
+CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent, bool startHidden)
     : CDialogEx(IDD_DIALOG_APPLICATION, pParent)
     , m_FilterDriverProxy{}
+    , m_ProfileManager{}
     , m_DropTarget{}
     , m_hIcon{}
     , m_TabApplication{}
     , m_BlacklistDlg(*this, nullptr)
     , m_WhitelistDlg(*this, nullptr)
     , m_AppProfilesDlg(*this, nullptr)
+    , m_StartHidden(startHidden)
 {
     TRACE_ALWAYS(L"");
     m_hIcon = ::AfxGetApp()->LoadIcon(IDR_DIALOG_APPLICATION);
@@ -91,7 +113,65 @@ BOOL CHidHideClientDlg::OnInitDialog()
     m_AppProfilesDlg.Create(IDD_DIALOG_APP_PROFILES, m_TabApplication.GetWindow(IDD_DIALOG_APP_PROFILES));
     m_AppProfilesDlg.MoveWindow(clientRect);
 
+    m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy);
+    m_ProfileManager->Recover();
+    m_ProfileManager->Tick();
+    AddTrayIcon();
+    SetTimer(PROFILE_TIMER_ID, PROFILE_TIMER_INTERVAL_MS, nullptr);
+    if (m_StartHidden) PostMessageW(WM_HIDE_AFTER_START);
+
     return (TRUE);
+}
+
+void CHidHideClientDlg::AddTrayIcon()
+{
+    m_NotifyIcon = {};
+    m_NotifyIcon.cbSize = sizeof(m_NotifyIcon);
+    m_NotifyIcon.hWnd = m_hWnd;
+    m_NotifyIcon.uID = 1;
+    m_NotifyIcon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    m_NotifyIcon.uCallbackMessage = WM_TRAY_ICON;
+    m_NotifyIcon.hIcon = m_hIcon;
+    wcscpy_s(m_NotifyIcon.szTip, L"HidHide App Profiles");
+    ::Shell_NotifyIconW(NIM_ADD, &m_NotifyIcon);
+}
+
+void CHidHideClientDlg::RemoveTrayIcon() noexcept
+{
+    if (nullptr != m_NotifyIcon.hWnd) ::Shell_NotifyIconW(NIM_DELETE, &m_NotifyIcon);
+    m_NotifyIcon.hWnd = nullptr;
+}
+
+void CHidHideClientDlg::HideToTray()
+{
+    ShowWindow(SW_HIDE);
+    if (!m_HideNoticeShown)
+    {
+        m_HideNoticeShown = true;
+        m_NotifyIcon.uFlags = NIF_INFO;
+        wcscpy_s(m_NotifyIcon.szInfoTitle, L"HidHide App Profiles");
+        wcscpy_s(m_NotifyIcon.szInfo, L"Profile monitoring is still running. Use the tray icon to reopen or exit.");
+        m_NotifyIcon.dwInfoFlags = NIIF_INFO;
+        ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
+    }
+}
+
+void CHidHideClientDlg::ShowFromTray()
+{
+    ShowWindow(SW_RESTORE);
+    SetForegroundWindow();
+}
+
+void CHidHideClientDlg::UpdateTrayTooltip()
+{
+    if (!m_ProfileManager) return;
+    std::wostringstream text;
+    text << L"HidHide App Profiles";
+    if (0 != m_ProfileManager->ActiveProfileCount())
+        text << L" — " << m_ProfileManager->ActiveProfileCount() << L" active";
+    m_NotifyIcon.uFlags = NIF_TIP;
+    wcsncpy_s(m_NotifyIcon.szTip, text.str().c_str(), _TRUNCATE);
+    ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
 }
 
 void CHidHideClientDlg::OnPaint()
@@ -168,5 +248,110 @@ void CHidHideClientDlg::OnShowWindow(BOOL bShow, UINT nStatus)
     CDialogEx::OnShowWindow(bShow, nStatus);
     m_TabApplication.SetCurSel(0);
     ResyncTabDialogVisibilityState();
+}
+
+_Use_decl_annotations_
+void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
+{
+    if ((PROFILE_TIMER_ID == nIDEvent) && m_ProfileManager)
+    {
+        try
+        {
+            m_ProfileManager->Tick();
+            UpdateTrayTooltip();
+        }
+        catch (...)
+        {
+            LOGEXC_AND_CONTINUE;
+        }
+    }
+    CDialogEx::OnTimer(nIDEvent);
+}
+
+void CHidHideClientDlg::OnClose()
+{
+    HideToTray();
+}
+
+void CHidHideClientDlg::OnCancel()
+{
+    if (!m_Exiting)
+    {
+        HideToTray();
+        return;
+    }
+    CDialogEx::OnCancel();
+}
+
+void CHidHideClientDlg::OnOK()
+{
+    HideToTray();
+}
+
+void CHidHideClientDlg::OnDestroy()
+{
+    KillTimer(PROFILE_TIMER_ID);
+    if (m_ProfileManager) m_ProfileManager->Stop();
+    RemoveTrayIcon();
+    CDialogEx::OnDestroy();
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnTrayIcon(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    auto const message{ static_cast<UINT>(lParam) };
+    if ((WM_LBUTTONDBLCLK == message) || (WM_LBUTTONUP == message))
+    {
+        ShowFromTray();
+    }
+    else if ((WM_RBUTTONUP == message) || (WM_CONTEXTMENU == message))
+    {
+        CMenu menu;
+        menu.CreatePopupMenu();
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_SHOW, L"Open HidHide App Profiles");
+        menu.AppendMenuW(MF_SEPARATOR);
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_EXIT, L"Exit and restore device settings");
+
+        CPoint point;
+        ::GetCursorPos(&point);
+        SetForegroundWindow();
+        auto const command{ menu.TrackPopupMenu(TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, this) };
+        if (TRAY_COMMAND_SHOW == command) ShowFromTray();
+        if (TRAY_COMMAND_EXIT == command)
+        {
+            m_Exiting = true;
+            CDialogEx::OnCancel();
+        }
+    }
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnHideAfterStart(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    ShowWindow(SW_HIDE);
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnShowManager(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    ShowFromTray();
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnTaskbarCreated(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    AddTrayIcon();
+    UpdateTrayTooltip();
+    return 0;
 }
 

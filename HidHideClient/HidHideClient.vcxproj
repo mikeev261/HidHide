@@ -365,6 +365,7 @@
     <ClInclude Include="src\HidHideClientDlg.h" />
     <ClInclude Include="src\AppProfilesDlg.h" />
     <ClInclude Include="src\IDropTarget.h" />
+    <ClInclude Include="src\ProfileManager.h" />
     <ClInclude Include="src\WhitelistDlg.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
@@ -383,6 +384,7 @@
     <ClCompile Include="src\HidHideClient.cpp" />
     <ClCompile Include="src\HidHideClientDlg.cpp" />
     <ClCompile Include="src\AppProfilesDlg.cpp" />
+    <ClCompile Include="src\ProfileManager.cpp" />
     <ClCompile Include="src\WhitelistDlg.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>

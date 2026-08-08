@@ -367,6 +367,7 @@ HidHideClient/RC*
 *.aps
 /Setup
 vcpkg_installed
+.nuke/temp/
 
 # MSI Build artifacts & Scripts
 Build_MSI.cmd

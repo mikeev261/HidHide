@@ -10,7 +10,7 @@
 
 namespace
 {
-    constexpr auto LEGACY_APP_PROFILES_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles" };
+    constexpr auto APP_PROFILES_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfiles" };
 
     typedef std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)> CloseHandlePtr;
 
@@ -91,62 +91,60 @@ namespace
         if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WHITELIST), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
     }
 
-    // Get the application profiles
-    HidHide::AppProfiles GetAppProfiles(_In_ HANDLE device)
+    // Set the application profiles
+    void SetAppProfiles(_In_ HidHide::AppProfiles const& appProfiles)
     {
         TRACE_ALWAYS(L"");
-        HidHide::AppProfiles result;
+        HKEY key{};
+        DWORD disposition{};
+        auto status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) };
+        if (ERROR_SUCCESS != status) THROW_WIN32(status);
 
-        DWORD needed{};
-        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_APP_PROFILES), nullptr, 0, nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
-        auto buffer{ std::vector<WCHAR>(needed / sizeof(WCHAR)) };
-        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_GET_APP_PROFILES), nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), &needed, nullptr)) THROW_WIN32_LAST_ERROR;
-
-        for (auto const& entry : HidHide::MultiStringToStringList(buffer))
+        // Delete by repeatedly removing index zero; deleting a value compacts the enumeration.
+        for (;;)
         {
-            const auto delimiter{ entry.find(L'\t') };
-            if ((std::wstring::npos == delimiter) || (0 == delimiter)) continue;
-
-            auto const imagePath{ std::filesystem::path(entry.substr(0, delimiter)) };
-            auto& devices{ result[imagePath] };
-            if (delimiter + 1 < entry.size()) devices.emplace(entry.substr(delimiter + 1));
+            std::vector<WCHAR> valueName(32768);
+            DWORD valueNameLength{ static_cast<DWORD>(valueName.size()) };
+            status = ::RegEnumValueW(key, 0, valueName.data(), &valueNameLength, nullptr, nullptr, nullptr, nullptr);
+            if (ERROR_NO_MORE_ITEMS == status) break;
+            if (ERROR_SUCCESS != status)
+            {
+                ::RegCloseKey(key);
+                THROW_WIN32(status);
+            }
+            status = ::RegDeleteValueW(key, valueName.data());
+            if (ERROR_SUCCESS != status)
+            {
+                ::RegCloseKey(key);
+                THROW_WIN32(status);
+            }
         }
 
-        return result;
-    }
-
-    // Set the application profiles
-    void SetAppProfiles(_In_ HANDLE device, _In_ HidHide::AppProfiles const& appProfiles)
-    {
-        TRACE_ALWAYS(L"");
-        std::vector<std::wstring> entries;
         for (auto const& [imagePath, devices] : appProfiles)
         {
-            if (devices.empty())
+            auto buffer{ HidHide::StringListToMultiString(HidHide::StringSetToStringList(devices)) };
+            if (buffer.size() < 2) buffer.emplace_back(L'\0');
+            status = ::RegSetValueExW(key, imagePath.native().c_str(), 0, REG_MULTI_SZ,
+                reinterpret_cast<BYTE const*>(buffer.data()), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)));
+            if (ERROR_SUCCESS != status)
             {
-                entries.emplace_back(imagePath.native() + L"\t");
-            }
-            else
-            {
-                for (auto const& devicePath : devices)
-                    entries.emplace_back(imagePath.native() + L"\t" + devicePath);
+                ::RegCloseKey(key);
+                THROW_WIN32(status);
             }
         }
 
-        DWORD needed{};
-        auto buffer{ HidHide::StringListToMultiString(entries) };
-        if (buffer.size() < 2) buffer.emplace_back(L'\0');
-        if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_APP_PROFILES), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
+        ::RegCloseKey(key);
     }
 
-    // Read profiles written by the original GUI implementation. Scanning the full
+    // Read profiles from the per-user store. Scanning the full
     // REG_MULTI_SZ buffer (rather than stopping at the first empty string) also
     // recovers device entries that were placed after the old empty-string sentinel.
-    HidHide::AppProfiles GetLegacyAppProfiles()
+    HidHide::AppProfiles GetAppProfiles()
     {
         HidHide::AppProfiles result;
         HKEY key{};
-        if (ERROR_SUCCESS != ::RegOpenKeyExW(HKEY_CURRENT_USER, LEGACY_APP_PROFILES_KEY, 0, KEY_READ, &key)) return result;
+        if (ERROR_SUCCESS != ::RegOpenKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, KEY_READ, &key)) return result;
 
         for (DWORD index = 0;; index++)
         {
@@ -232,22 +230,10 @@ namespace HidHide
         , m_Active{ ::GetActive(m_Device.get()) }
         , m_Blacklist{ ::GetBlacklist(m_Device.get()) }
         , m_Whitelist{ ::GetWhitelist(m_Device.get()) }
-        , m_AppProfiles{ ::GetAppProfiles(m_Device.get()) }
+        , m_AppProfiles{ ::GetAppProfiles() }
         , m_Inverse{ ::GetInverse(m_Device.get()) }
     {
         TRACE_ALWAYS(L"");
-
-        if (m_AppProfiles.empty())
-        {
-            auto const legacyProfiles{ ::GetLegacyAppProfiles() };
-            if (!legacyProfiles.empty())
-            {
-                ::SetAppProfiles(m_Device.get(), legacyProfiles);
-                m_AppProfiles = legacyProfiles;
-                auto const deleteStatus{ ::RegDeleteTreeW(HKEY_CURRENT_USER, LEGACY_APP_PROFILES_KEY) };
-                if ((ERROR_SUCCESS != deleteStatus) && (ERROR_FILE_NOT_FOUND != deleteStatus)) THROW_WIN32(deleteStatus);
-            }
-        }
 
         if (auto const fullImageName{ HidHide::FileNameToFullImageName(HidHide::ModuleFileName()) }; !fullImageName.empty())
         {
@@ -272,7 +258,7 @@ namespace HidHide
         if (m_WriteThrough) THROW_WIN32(ERROR_INVALID_PARAMETER);
         if (::GetWhitelist(m_Device.get()) != m_Whitelist) ::SetWhitelist(m_Device.get(), m_Whitelist);
         if (::GetBlacklist(m_Device.get()) != m_Blacklist) ::SetBlacklist(m_Device.get(), m_Blacklist);
-        if (::GetAppProfiles(m_Device.get()) != m_AppProfiles) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+        if (::GetAppProfiles() != m_AppProfiles) ::SetAppProfiles(m_AppProfiles);
         if (::GetActive(m_Device.get()) != m_Active) ::SetActive(m_Device.get(), m_Active);
         if (::GetInverse(m_Device.get()) != m_Inverse) ::SetInverse(m_Device.get(), m_Inverse);
     }
@@ -382,7 +368,7 @@ namespace HidHide
         if (m_AppProfiles != appProfiles)
         {
             m_AppProfiles = appProfiles;
-            if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+            if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
         }
     }
 
@@ -391,7 +377,7 @@ namespace HidHide
     {
         TRACE_ALWAYS(L"");
         if (m_AppProfiles.try_emplace(fullImageName).second && m_WriteThrough)
-            ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+            ::SetAppProfiles(m_AppProfiles);
     }
 
     _Use_decl_annotations_
@@ -399,7 +385,7 @@ namespace HidHide
     {
         TRACE_ALWAYS(L"");
         if (0 != m_AppProfiles.erase(fullImageName) && m_WriteThrough)
-            ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+            ::SetAppProfiles(m_AppProfiles);
     }
 
     _Use_decl_annotations_
@@ -408,7 +394,7 @@ namespace HidHide
         TRACE_ALWAYS(L"");
         if (m_AppProfiles[fullImageName].insert(deviceInstancePath).second)
         {
-            if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+            if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
         }
     }
 
@@ -420,7 +406,7 @@ namespace HidHide
         {
             if (it->second.erase(deviceInstancePath) > 0)
             {
-                if (m_WriteThrough) ::SetAppProfiles(m_Device.get(), m_AppProfiles);
+                if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
             }
         }
     }

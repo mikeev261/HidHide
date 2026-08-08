@@ -110,30 +110,14 @@ class Build : NukeBuild
 
     Target StageInstallerPayload => _ => _
         .DependsOn(Compile)
-        .Executes(async () =>
+        .Executes(() =>
         {
             EnsureCleanDirectory(StageDir);
 
-            // Driver artifacts
-            CopyFileToDirectory(OutputRoot / "HidHide" / "HidHide.sys", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHide" / "HidHide.inf", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHide" / "HidHide.cat", StageDir, FileExistsPolicy.Fail);
-
-            // Kernel ETW
-            CopyFileToDirectory(OutputRoot / "HidHide.man", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHide.wprp", StageDir, FileExistsPolicy.Fail);
-
-            // User-mode binaries + ETW
+            // The companion package deliberately excludes the kernel driver and
+            // installs alongside an existing Microsoft-signed HidHide release.
             CopyFileToDirectory(OutputRoot / "HidHideClient.exe", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHideClient.man", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHideClient.wprp", StageDir, FileExistsPolicy.Fail);
-
             CopyFileToDirectory(OutputRoot / "HidHideCLI.exe", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHideCLI.man", StageDir, FileExistsPolicy.Fail);
-            CopyFileToDirectory(OutputRoot / "HidHideCLI.wprp", StageDir, FileExistsPolicy.Fail);
-
-            // Helper tool: nefcon windowless build (zip layout: x64/ / ARM64/ / x86/)
-            await EnsureNefconwAsync(StageDir, Platform);
         });
 
     Target TestSignStagingDriver => _ => _
@@ -226,7 +210,7 @@ class Build : NukeBuild
         });
 
     Target BuildMsi => _ => _
-        .DependsOn(TestSignStagingDriver)
+        .DependsOn(StageInstallerPayload)
         .Executes(() =>
         {
             // Run the WixSharp installer builder; on CI this runs on Windows.
@@ -247,7 +231,7 @@ class Build : NukeBuild
             if (builtMsi.Length != 1)
                 throw new Exception($"Expected exactly one MSI in {outDir}, found {builtMsi.Length}.");
 
-            var targetName = $"HidHide_{Platform}.msi";
+            var targetName = $"HidHideAppProfiles_{Platform}.msi";
             var targetPath = Path.Combine(outDir, targetName);
             if (File.Exists(targetPath))
                 File.Delete(targetPath);

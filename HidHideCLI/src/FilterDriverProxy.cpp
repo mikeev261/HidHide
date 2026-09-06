@@ -7,6 +7,8 @@
 #include "Utils.h"
 #include "Volume.h"
 #include "Logging.h"
+#include <ktmw32.h>
+#pragma comment(lib, "KtmW32.lib")
 
 namespace
 {
@@ -95,10 +97,14 @@ namespace
     void SetAppProfiles(_In_ HidHide::AppProfiles const& appProfiles)
     {
         TRACE_ALWAYS(L"");
+        // Preserve the established value-per-profile schema, but publish the whole
+        // replacement atomically. Closing an uncommitted transaction rolls it back.
+        CloseHandlePtr transaction{ ::CreateTransaction(nullptr, nullptr, 0, 0, 0, 0, nullptr), &::CloseHandle };
+        if (INVALID_HANDLE_VALUE == transaction.get()) THROW_WIN32_LAST_ERROR;
         HKEY key{};
         DWORD disposition{};
-        auto status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
-            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) };
+        auto status{ ::RegCreateKeyTransactedW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition, transaction.get(), nullptr) };
         if (ERROR_SUCCESS != status) THROW_WIN32(status);
 
         // Delete by repeatedly removing index zero; deleting a value compacts the enumeration.
@@ -135,6 +141,7 @@ namespace
         }
 
         ::RegCloseKey(key);
+        if (!::CommitTransaction(transaction.get())) THROW_WIN32_LAST_ERROR;
     }
 
     // Read profiles from the per-user store. Scanning the full
@@ -144,7 +151,9 @@ namespace
     {
         HidHide::AppProfiles result;
         HKEY key{};
-        if (ERROR_SUCCESS != ::RegOpenKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, KEY_READ, &key)) return result;
+        auto const openStatus = ::RegOpenKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, KEY_READ, &key);
+        if (ERROR_FILE_NOT_FOUND == openStatus) return result;
+        if (ERROR_SUCCESS != openStatus) THROW_WIN32(openStatus);
 
         for (DWORD index = 0;; index++)
         {
@@ -154,13 +163,15 @@ namespace
             DWORD dataSize{};
             auto const status{ ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type, nullptr, &dataSize) };
             if (ERROR_NO_MORE_ITEMS == status) break;
-            if ((ERROR_SUCCESS != status) || (REG_MULTI_SZ != type) || (0 == valueNameLength)) continue;
+            if (ERROR_SUCCESS != status) { ::RegCloseKey(key); THROW_WIN32(status); }
+            if ((REG_MULTI_SZ != type) || (0 == valueNameLength)) continue;
 
             std::vector<WCHAR> buffer((dataSize / sizeof(WCHAR)) + 1, L'\0');
             valueNameLength = static_cast<DWORD>(valueName.size());
             DWORD readSize{ dataSize };
-            if (ERROR_SUCCESS != ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type,
-                reinterpret_cast<LPBYTE>(buffer.data()), &readSize)) continue;
+            auto const readStatus = ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type,
+                reinterpret_cast<LPBYTE>(buffer.data()), &readSize);
+            if (ERROR_SUCCESS != readStatus) { ::RegCloseKey(key); THROW_WIN32(readStatus); }
 
             std::filesystem::path imagePath{ std::wstring(valueName.data(), valueNameLength) };
             if (0 != _wcsnicmp(imagePath.native().c_str(), L"\\Device\\", 8))
@@ -215,217 +226,80 @@ namespace
         if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WLINVERSE), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), nullptr, 0, &needed, nullptr))
         {
             auto const lastError{ ::GetLastError() };
-            if (ERROR_INVALID_PARAMETER == lastError || ERROR_NOT_SUPPORTED == lastError || ERROR_INVALID_FUNCTION == lastError) return;
+            // Unsupported writes must not be acknowledged as persisted changes.
             THROW_WIN32(lastError);
         }
     }
 }
 
+namespace
+{
+    class WindowsConfigurationBackend : public HidHide::ConfigurationBackend
+    {
+        HANDLE m_Device{};
+        struct Operation : Lease
+        {
+            WindowsConfigurationBackend& backend;
+            CloseHandlePtr mutex{ nullptr, &::CloseHandle };
+            CloseHandlePtr device{ nullptr, &::CloseHandle };
+            bool locked{};
+            explicit Operation(WindowsConfigurationBackend& owner) : backend(owner)
+            {
+                mutex.reset(::CreateMutexW(nullptr, FALSE, L"Global\\HidHide.Configuration"));
+                if (!mutex) THROW_WIN32_LAST_ERROR;
+                DWORD const result = ::WaitForSingleObject(mutex.get(), 10000);
+                if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) THROW_WIN32(ERROR_BUSY);
+                locked = true;
+                try { device = ::Device(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME)); }
+                catch (...) { ::ReleaseMutex(mutex.get()); locked = false; throw; }
+                backend.m_Device = device.get();
+            }
+            ~Operation() override
+            {
+                backend.m_Device = nullptr;
+                device.reset();
+                if (locked) ::ReleaseMutex(mutex.get());
+            }
+        };
+    public:
+        std::unique_ptr<Lease> Acquire() override { return std::make_unique<Operation>(*this); }
+        bool ReadActive() override { return ::GetActive(m_Device); }
+        void WriteActive(bool const& value) override { ::SetActive(m_Device, value); }
+        HidHide::DeviceInstancePaths ReadBlacklist() override { return ::GetBlacklist(m_Device); }
+        void WriteBlacklist(HidHide::DeviceInstancePaths const& value) override { ::SetBlacklist(m_Device, value); }
+        HidHide::FullImageNames ReadWhitelist() override { return ::GetWhitelist(m_Device); }
+        void WriteWhitelist(HidHide::FullImageNames const& value) override { ::SetWhitelist(m_Device, value); }
+        HidHide::AppProfiles ReadAppProfiles() override { return ::GetAppProfiles(); }
+        void WriteAppProfiles(HidHide::AppProfiles const& value) override { ::SetAppProfiles(value); }
+        bool ReadInverse() override { return ::GetInverse(m_Device); }
+        void WriteInverse(bool const& value) override { ::SetInverse(m_Device, value); }
+    };
+    std::shared_ptr<HidHide::ConfigurationBackend> MakeBackend()
+    {
+        auto backend = std::make_shared<WindowsConfigurationBackend>();
+        auto lease = backend->Acquire();
+        auto whitelist = backend->ReadWhitelist();
+        if (auto const image = HidHide::FileNameToFullImageName(HidHide::ModuleFileName()); !image.empty())
+        {
+            auto const inverse = backend->ReadInverse();
+            if ((!inverse && whitelist.emplace(image).second)
+                || (inverse && whitelist.erase(image))) backend->WriteWhitelist(whitelist);
+        }
+        return backend;
+    }
+}
 namespace HidHide
 {
-    _Use_decl_annotations_
     FilterDriverProxy::FilterDriverProxy(bool writeThrough)
-        : m_WriteThrough{ writeThrough }
-        , m_Device{ ::Device(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME)) }
-        , m_Active{ ::GetActive(m_Device.get()) }
-        , m_Blacklist{ ::GetBlacklist(m_Device.get()) }
-        , m_Whitelist{ ::GetWhitelist(m_Device.get()) }
-        , m_AppProfiles{ ::GetAppProfiles() }
-        , m_Inverse{ ::GetInverse(m_Device.get()) }
-    {
-        TRACE_ALWAYS(L"");
-
-        if (auto const fullImageName{ HidHide::FileNameToFullImageName(HidHide::ModuleFileName()) }; !fullImageName.empty())
-        {
-            // Ensure the application itself is always on the whitelist if inverse whitelist is off or always off
-            // the whitelist if inverse is on and apply the change immediately
-            if ((!m_Inverse && m_Whitelist.emplace(fullImageName).second) || (m_Inverse && m_Whitelist.erase(fullImageName)))
-                ::SetWhitelist(m_Device.get(), m_Whitelist);
-        }
-    }
+        : ConfigurationSession(MakeBackend(), writeThrough ? ConfigurationMode::Live : ConfigurationMode::Snapshot) {}
 
     DWORD FilterDriverProxy::DeviceStatus()
     {
-        TRACE_ALWAYS(L"");
-        auto const handle{ CloseHandlePtr(::CreateFileW(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME).c_str(), GENERIC_READ, (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE), nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle) };
-        if ((INVALID_HANDLE_VALUE == handle.get()) && (ERROR_ACCESS_DENIED != ::GetLastError()) && (ERROR_FILE_NOT_FOUND != ::GetLastError())) THROW_WIN32_LAST_ERROR;
-        return ((INVALID_HANDLE_VALUE == handle.get()) ? ::GetLastError() : ERROR_SUCCESS);
-    }
-
-    void FilterDriverProxy::ApplyConfigurationChanges()
-    {
-        TRACE_ALWAYS(L"");
-        if (m_WriteThrough) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        if (::GetWhitelist(m_Device.get()) != m_Whitelist) ::SetWhitelist(m_Device.get(), m_Whitelist);
-        if (::GetBlacklist(m_Device.get()) != m_Blacklist) ::SetBlacklist(m_Device.get(), m_Blacklist);
-        if (::GetAppProfiles() != m_AppProfiles) ::SetAppProfiles(m_AppProfiles);
-        if (::GetActive(m_Device.get()) != m_Active) ::SetActive(m_Device.get(), m_Active);
-        if (::GetInverse(m_Device.get()) != m_Inverse) ::SetInverse(m_Device.get(), m_Inverse);
-    }
-
-    bool FilterDriverProxy::GetActive() const
-    {
-        TRACE_ALWAYS(L"");
-        return (m_Active);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::SetActive(bool active)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Active != active)
-        {
-            m_Active = active;
-            if (m_WriteThrough) ::SetActive(m_Device.get(), m_Active);
-        }
-    }
-
-    DeviceInstancePaths FilterDriverProxy::GetBlacklist() const
-    {
-        TRACE_ALWAYS(L"");
-        return (m_Blacklist);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::SetBlacklist(DeviceInstancePaths const& deviceInstancePaths)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Blacklist != deviceInstancePaths)
-        {
-            m_Blacklist = deviceInstancePaths;
-            if (m_WriteThrough) ::SetBlacklist(m_Device.get(), m_Blacklist);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::BlacklistAddEntry(DeviceInstancePath const& deviceInstancePath)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Blacklist.emplace(deviceInstancePath).second)
-        {
-            if (m_WriteThrough) ::SetBlacklist(m_Device.get(), m_Blacklist);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::BlacklistDelEntry(DeviceInstancePath const& deviceInstancePath)
-    {
-        TRACE_ALWAYS(L"");
-        if (auto const it{ m_Blacklist.find(deviceInstancePath) }; std::end(m_Blacklist) != it)
-        {
-            m_Blacklist.erase(it);
-            if (m_WriteThrough) ::SetBlacklist(m_Device.get(), m_Blacklist);
-        }
-    }
-
-    FullImageNames FilterDriverProxy::GetWhitelist() const
-    {
-        TRACE_ALWAYS(L"");
-        return (m_Whitelist);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::SetWhitelist(FullImageNames const& fullImageNames)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Whitelist != fullImageNames)
-        {
-            m_Whitelist = fullImageNames;
-            if (m_WriteThrough) ::SetWhitelist(m_Device.get(), m_Whitelist);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::WhitelistAddEntry(FullImageName const& fullImageName)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Whitelist.emplace(fullImageName).second)
-        {
-            if (m_WriteThrough) ::SetWhitelist(m_Device.get(), m_Whitelist);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::WhitelistDelEntry(FullImageName const& fullImageName)
-    {
-        if (auto const it{ m_Whitelist.find(fullImageName) }; std::end(m_Whitelist) != it)
-        {
-            m_Whitelist.erase(it);
-            if (m_WriteThrough) ::SetWhitelist(m_Device.get(), m_Whitelist);
-        }
-    }
-
-    AppProfiles FilterDriverProxy::GetAppProfiles() const
-    {
-        TRACE_ALWAYS(L"");
-        return (m_AppProfiles);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::SetAppProfiles(AppProfiles const& appProfiles)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_AppProfiles != appProfiles)
-        {
-            m_AppProfiles = appProfiles;
-            if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileAdd(FullImageName const& fullImageName)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_AppProfiles.try_emplace(fullImageName).second && m_WriteThrough)
-            ::SetAppProfiles(m_AppProfiles);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileDelete(FullImageName const& fullImageName)
-    {
-        TRACE_ALWAYS(L"");
-        if (0 != m_AppProfiles.erase(fullImageName) && m_WriteThrough)
-            ::SetAppProfiles(m_AppProfiles);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileAddEntry(FullImageName const& fullImageName, DeviceInstancePath const& deviceInstancePath)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_AppProfiles[fullImageName].insert(deviceInstancePath).second)
-        {
-            if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
-        }
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileDelEntry(FullImageName const& fullImageName, DeviceInstancePath const& deviceInstancePath)
-    {
-        TRACE_ALWAYS(L"");
-        if (auto const it{ m_AppProfiles.find(fullImageName) }; std::end(m_AppProfiles) != it)
-        {
-            if (it->second.erase(deviceInstancePath) > 0)
-            {
-                if (m_WriteThrough) ::SetAppProfiles(m_AppProfiles);
-            }
-        }
-    }
-
-
-    bool FilterDriverProxy::GetInverse() const
-    {
-        TRACE_ALWAYS(L"");
-        return (m_Inverse);
-    }
-
-    _Use_decl_annotations_
-    void FilterDriverProxy::SetInverse(bool inverse)
-    {
-        TRACE_ALWAYS(L"");
-        if (m_Inverse != inverse)
-        {
-            m_Inverse = inverse;
-            if (m_WriteThrough) ::SetInverse(m_Device.get(), m_Inverse);
-        }
+        CloseHandlePtr handle{ ::CreateFileW(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME).c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle };
+        if (INVALID_HANDLE_VALUE != handle.get()) return ERROR_SUCCESS;
+        auto const error = ::GetLastError();
+        if (ERROR_ACCESS_DENIED != error && ERROR_FILE_NOT_FOUND != error) THROW_WIN32(error);
+        return error;
     }
 }

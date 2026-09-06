@@ -363,6 +363,7 @@
     <ClInclude Include="src\BlacklistDlg.h" />
     <ClInclude Include="src\HidHideClient.h" />
     <ClInclude Include="src\HidHideClientDlg.h" />
+    <ClInclude Include="src\ConfigurationUi.h" />
     <ClInclude Include="src\AppProfilesDlg.h" />
     <ClInclude Include="src\IDropTarget.h" />
     <ClInclude Include="src\ProfileManager.h" />

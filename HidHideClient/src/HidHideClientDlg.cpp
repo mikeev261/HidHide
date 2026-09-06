@@ -8,6 +8,19 @@
 #include "Utils.h"
 #include "Logging.h"
 
+UINT const WM_HIDHIDE_SHOW_MANAGER{ ::RegisterWindowMessageW(L"HidHide.AppProfiles.ShowManager") };
+UINT const WM_TASKBAR_CREATED{ ::RegisterWindowMessageW(L"TaskbarCreated") };
+
+namespace
+{
+    constexpr UINT_PTR PROFILE_TIMER_ID{ 42 };
+    constexpr UINT PROFILE_TIMER_INTERVAL_MS{ 100 };
+    constexpr UINT WM_TRAY_ICON{ WM_APP + 1 };
+    constexpr UINT WM_HIDE_AFTER_START{ WM_APP + 2 };
+    constexpr UINT TRAY_COMMAND_SHOW{ 1 };
+    constexpr UINT TRAY_COMMAND_EXIT{ 2 };
+}
+
 #pragma warning(push)
 #pragma warning(disable: 26454 28213) // Warnings caused by Microsoft MFC macros
 BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
@@ -15,19 +28,28 @@ BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
     ON_WM_QUERYDRAGICON()
     ON_NOTIFY(TCN_SELCHANGE, IDC_TAB_APPLICATION, &CHidHideClientDlg::OnTcnSelchangeTabApplication)
     ON_WM_SHOWWINDOW()
+    ON_WM_TIMER()
+    ON_WM_CLOSE()
+    ON_WM_DESTROY()
+    ON_MESSAGE(WM_TRAY_ICON, &CHidHideClientDlg::OnTrayIcon)
+    ON_MESSAGE(WM_HIDE_AFTER_START, &CHidHideClientDlg::OnHideAfterStart)
+    ON_REGISTERED_MESSAGE(WM_HIDHIDE_SHOW_MANAGER, &CHidHideClientDlg::OnShowManager)
+    ON_REGISTERED_MESSAGE(WM_TASKBAR_CREATED, &CHidHideClientDlg::OnTaskbarCreated)
 END_MESSAGE_MAP()
 #pragma warning(pop)
 
 _Use_decl_annotations_
-CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent)
+CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent, bool startHidden)
     : CDialogEx(IDD_DIALOG_APPLICATION, pParent)
     , m_FilterDriverProxy{}
+    , m_ProfileManager{}
     , m_DropTarget{}
     , m_hIcon{}
     , m_TabApplication{}
     , m_BlacklistDlg(*this, nullptr)
     , m_WhitelistDlg(*this, nullptr)
     , m_AppProfilesDlg(*this, nullptr)
+    , m_StartHidden(startHidden)
 {
     TRACE_ALWAYS(L"");
     m_hIcon = ::AfxGetApp()->LoadIcon(IDR_DIALOG_APPLICATION);
@@ -36,6 +58,18 @@ CHidHideClientDlg::CHidHideClientDlg(CWnd* pParent)
 HidHide::FilterDriverProxy& CHidHideClientDlg::FilterDriverProxy() noexcept
 {
     return (*m_FilterDriverProxy.get());
+}
+
+_Use_decl_annotations_
+bool CHidHideClientDlg::ProfileIsActive(HidHide::FullImageName const& profile) const noexcept
+{
+    return m_ProfileManager && m_ProfileManager->ProfileIsActive(profile);
+}
+
+_Use_decl_annotations_
+bool CHidHideClientDlg::ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept
+{
+    return m_ProfileManager && m_ProfileManager->ProfileIsUnresolved(profile);
 }
 
 _Use_decl_annotations_
@@ -91,7 +125,82 @@ BOOL CHidHideClientDlg::OnInitDialog()
     m_AppProfilesDlg.Create(IDD_DIALOG_APP_PROFILES, m_TabApplication.GetWindow(IDD_DIALOG_APP_PROFILES));
     m_AppProfilesDlg.MoveWindow(clientRect);
 
+    try { m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy); }
+    catch (std::system_error const&)
+    {
+        MessageBoxW(L"HidHide cannot acquire machine-wide profile manager ownership. Another Windows session may "
+            L"already be running the manager, or access to its ownership lock was denied. Close that manager and try again.",
+            L"HidHide profile manager unavailable", MB_OK | MB_ICONWARNING);
+        EndDialog(IDCANCEL);
+        return TRUE;
+    }
+    m_ProfileManager->Recover();
+    if (m_ProfileManager->Conflict())
+        MessageBoxW(L"App profiles paused: the saved recovery state cannot safely restore the current driver configuration. "
+            L"The current configuration has been preserved. Review it and restart HidHide to resume profiles.",
+            L"HidHide configuration conflict", MB_OK | MB_ICONWARNING);
+    m_ProfileManager->Tick();
+    AddTrayIcon();
+    SetTimer(PROFILE_TIMER_ID, PROFILE_TIMER_INTERVAL_MS, nullptr);
+    if (m_StartHidden) PostMessageW(WM_HIDE_AFTER_START);
+
     return (TRUE);
+}
+
+void CHidHideClientDlg::AddTrayIcon()
+{
+    m_LastTrayProfileCount = static_cast<size_t>(-1);
+    m_NotifyIcon = {};
+    m_NotifyIcon.cbSize = sizeof(m_NotifyIcon);
+    m_NotifyIcon.hWnd = m_hWnd;
+    m_NotifyIcon.uID = 1;
+    m_NotifyIcon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    m_NotifyIcon.uCallbackMessage = WM_TRAY_ICON;
+    m_NotifyIcon.hIcon = m_hIcon;
+    wcscpy_s(m_NotifyIcon.szTip, L"HidHide App Profiles");
+    ::Shell_NotifyIconW(NIM_ADD, &m_NotifyIcon);
+}
+
+void CHidHideClientDlg::RemoveTrayIcon() noexcept
+{
+    if (nullptr != m_NotifyIcon.hWnd) ::Shell_NotifyIconW(NIM_DELETE, &m_NotifyIcon);
+    m_NotifyIcon.hWnd = nullptr;
+}
+
+void CHidHideClientDlg::HideToTray()
+{
+    ShowWindow(SW_HIDE);
+    if (!m_HideNoticeShown)
+    {
+        m_HideNoticeShown = true;
+        m_NotifyIcon.uFlags = NIF_INFO;
+        wcscpy_s(m_NotifyIcon.szInfoTitle, L"HidHide App Profiles");
+        wcscpy_s(m_NotifyIcon.szInfo, L"Profile monitoring is still running. Use the tray icon to reopen or exit.");
+        m_NotifyIcon.dwInfoFlags = NIIF_INFO;
+        ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
+    }
+}
+
+void CHidHideClientDlg::ShowFromTray()
+{
+    ShowWindow(SW_RESTORE);
+    SetForegroundWindow();
+}
+
+void CHidHideClientDlg::UpdateTrayTooltip()
+{
+    if (!m_ProfileManager) return;
+    auto const activeProfileCount{ m_ProfileManager->ActiveProfileCount() };
+    if (m_LastTrayProfileCount == activeProfileCount && !m_ProfileManager->Conflict()) return;
+
+    std::wostringstream text;
+    text << L"HidHide App Profiles";
+    if (m_ProfileManager->Conflict()) text << L" - paused: configuration conflict";
+    if (0 != activeProfileCount) text << L" — " << activeProfileCount << L" active";
+    m_NotifyIcon.uFlags = NIF_TIP;
+    wcsncpy_s(m_NotifyIcon.szTip, text.str().c_str(), _TRUNCATE);
+    ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
+    m_LastTrayProfileCount = activeProfileCount;
 }
 
 void CHidHideClientDlg::OnPaint()
@@ -170,3 +279,134 @@ void CHidHideClientDlg::OnShowWindow(BOOL bShow, UINT nStatus)
     ResyncTabDialogVisibilityState();
 }
 
+_Use_decl_annotations_
+void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
+{
+    if ((PROFILE_TIMER_ID == nIDEvent) && m_ProfileManager)
+    {
+        try
+        {
+            bool const wasConflict = m_ProfileManager->Conflict();
+            try { m_ProfileManager->Tick(); }
+            catch (HidHide::ConfigurationConflict const&) {}
+            UpdateTrayTooltip();
+            if (!wasConflict && m_ProfileManager->Conflict())
+                MessageBoxW(L"App profiles paused because the driver configuration changed outside the active profile override. "
+                    L"The current configuration has been preserved. Review it and restart HidHide to resume profiles.",
+                    L"HidHide configuration conflict", MB_OK | MB_ICONWARNING);
+        }
+        catch (...)
+        {
+            LOGEXC_AND_CONTINUE;
+        }
+    }
+    if (PROFILE_TIMER_ID == nIDEvent)
+    {
+        // Independent of Tick failures and conflict notification: partial writes
+        // may have changed Active even when reconciliation did not finish.
+        try { m_BlacklistDlg.SynchronizeActiveState(); }
+        catch (...) { LOGEXC_AND_CONTINUE; }
+    }
+    CDialogEx::OnTimer(nIDEvent);
+}
+
+void CHidHideClientDlg::OnClose()
+{
+    HideToTray();
+}
+
+void CHidHideClientDlg::OnCancel()
+{
+    if (!m_Exiting)
+    {
+        HideToTray();
+        return;
+    }
+    CDialogEx::OnCancel();
+}
+
+void CHidHideClientDlg::OnOK()
+{
+    HideToTray();
+}
+
+void CHidHideClientDlg::OnDestroy()
+{
+    KillTimer(PROFILE_TIMER_ID);
+    if (m_ProfileManager) m_ProfileManager->Stop();
+    RemoveTrayIcon();
+    CDialogEx::OnDestroy();
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnTrayIcon(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    auto const message{ static_cast<UINT>(lParam) };
+    if ((WM_LBUTTONDBLCLK == message) || (WM_LBUTTONUP == message))
+    {
+        ShowFromTray();
+    }
+    else if ((WM_RBUTTONUP == message) || (WM_CONTEXTMENU == message))
+    {
+        CMenu menu;
+        menu.CreatePopupMenu();
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_SHOW, L"Open HidHide App Profiles");
+        menu.AppendMenuW(MF_SEPARATOR);
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_EXIT, L"Exit and restore device settings");
+
+        CPoint point;
+        ::GetCursorPos(&point);
+        SetForegroundWindow();
+        auto const command{ menu.TrackPopupMenu(TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, this) };
+        if (TRAY_COMMAND_SHOW == command) ShowFromTray();
+        if (TRAY_COMMAND_EXIT == command)
+        {
+            m_Exiting = true;
+            CDialogEx::OnCancel();
+        }
+    }
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnHideAfterStart(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    ShowWindow(SW_HIDE);
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnShowManager(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    ShowFromTray();
+    return 0;
+}
+
+_Use_decl_annotations_
+LRESULT CHidHideClientDlg::OnTaskbarCreated(WPARAM wParam, LPARAM lParam)
+{
+    UNREFERENCED_PARAMETER(wParam);
+    UNREFERENCED_PARAMETER(lParam);
+    AddTrayIcon();
+    UpdateTrayTooltip();
+    return 0;
+}
+
+
+HidHide::DeviceInstancePaths CHidHideClientDlg::Baseline()
+{ return m_ProfileManager ? m_ProfileManager->Baseline() : m_FilterDriverProxy->GetBlacklist(); }
+void CHidHideClientDlg::EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested)
+{
+    if (m_ProfileManager) m_ProfileManager->EditBaseline(displayed, requested);
+    else m_FilterDriverProxy->SetBlacklist(displayed, requested);
+}
+void CHidHideClientDlg::SetEnabled(bool displayed, bool requested)
+{
+    if (m_ProfileManager) m_ProfileManager->SetEnabled(displayed, requested);
+    else m_FilterDriverProxy->SetActive(displayed, requested);
+}

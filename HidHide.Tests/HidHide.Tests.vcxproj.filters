@@ -9,6 +9,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="profile_process_match_tests.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="configuration_session_tests.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="cli_parsing_tests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

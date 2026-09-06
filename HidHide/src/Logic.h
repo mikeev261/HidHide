@@ -13,7 +13,6 @@ ULONG PsGetProcessSessionId(PEPROCESS process);
 #define DRIVER_PROPERTY_BLACKLISTED_DEVICE_INSTANCE_PATHS L"BlacklistedDeviceInstancePaths" // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters\BlacklistedDeviceInstancePaths (REG_MULTI_Z)
 #define DRIVER_PROPERTY_ACTIVE                            L"Active"                         // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters\Active (DWORD)
 #define DRIVER_PROPERTY_WHITELISTED_INVERSE               L"WhitelistedInverse"             // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters\WhitelistedInverse (DWORD)
-#define DRIVER_PROPERTY_APPLICATION_DEVICE_PROFILES       L"ApplicationDeviceProfiles"      // HKLM\SYSTEM\CurrentControlSet\Services\HidHide\Parameters\ApplicationDeviceProfiles (REG_MULTI_SZ)
 
 #include "HidHideIoctlContract.h"
 
@@ -38,9 +37,6 @@ typedef struct _CONTROL_DEVICE_CONTEXT
 
     // Collection of string objects containing the device instance paths of the human interface devices (HID) that are subject to access control
     WDFCOLLECTION blacklistedDeviceInstancePaths;
-
-    // Collection of "<NT image path>\t<device instance path>" application profile entries.
-    WDFCOLLECTION applicationDeviceProfiles;
 
     // The device active (enabled) state
     BOOLEAN active;
@@ -159,10 +155,6 @@ _IRQL_requires_same_
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS OnControlDeviceIoSetInverse(_In_ WDFDEVICE wdfDevice, _In_ WDFQUEUE wdfQueue, _In_ WDFREQUEST wdfRequest, _In_ size_t outputBufferLength, _In_ size_t inputBufferLength, _In_ ULONG ioControlCode);
 
-NTSTATUS OnControlDeviceIoGetAppProfiles(_In_ WDFDEVICE wdfDevice, _In_ WDFQUEUE wdfQueue, _In_ WDFREQUEST wdfRequest, _In_ size_t outputBufferLength, _In_ size_t inputBufferLength, _In_ ULONG ioControlCode);
-
-NTSTATUS OnControlDeviceIoSetAppProfiles(_In_ WDFDEVICE wdfDevice, _In_ WDFQUEUE wdfQueue, _In_ WDFREQUEST wdfRequest, _In_ size_t outputBufferLength, _In_ size_t inputBufferLength, _In_ ULONG ioControlCode);
-
 // Handle AddSessionBlacklist I/O request — adds device instance paths to a process-lifetime blacklist
 // Entries are automatically removed when the calling process exits (clean or crash)
 _IRQL_requires_same_
@@ -190,11 +182,6 @@ _IRQL_requires_same_
 _IRQL_requires_max_(PASSIVE_LEVEL)
 BOOLEAN Blacklisted(_In_ PUNICODE_STRING deviceInstancePath, ULONG sessionId);
 
-// Is this device hidden specifically from this process by an application profile?
-_IRQL_requires_same_
-_IRQL_requires_max_(PASSIVE_LEVEL)
-BOOLEAN ProfileBlacklisted(_In_ HANDLE processId, _In_ PCUNICODE_STRING deviceInstancePath);
-
 // Get the whitelist in a multi-string format
 // When the supplied buffer is NULL, the method returns STATUS_SUCCESS and indicates the buffer size needed for the multi-string (incl. terminator)
 // When the supplied buffer isn't NULL, the list will be copied into the buffer, providing the buffer is large enough for holding the result
@@ -218,10 +205,6 @@ NTSTATUS GetBlacklist(_Out_writes_to_opt_(bufferSizeInCharacters, *neededSizeInC
 _IRQL_requires_same_
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS SetBlacklist(_In_reads_(bufferSizeInCharacters) LPWSTR buffer, _In_ size_t bufferSizeInCharacters);
-
-NTSTATUS GetAppProfiles(_Out_writes_to_opt_(bufferSizeInCharacters, *neededSizeInCharacters) LPWSTR buffer, _In_ size_t bufferSizeInCharacters, _Out_ size_t* neededSizeInCharacters);
-
-NTSTATUS SetAppProfiles(_In_reads_(bufferSizeInCharacters) LPWSTR buffer, _In_ size_t bufferSizeInCharacters);
 
 // Get the active state (enable/disable service)
 _IRQL_requires_same_

@@ -4,8 +4,9 @@ The root `README.md` is reserved for end-user documentation. Maintainer notes fo
 
 ## Flow
 
-- **CI (AppVeyor)** produces **unsigned** artifacts (x64 + ARM64): `HidHide_x64.msi`, `HidHide_ARM64.msi`, and driver attestation `.cab` files.
-- **Local** maintainer machine performs **code signing** with `signtool` (certificate in local cert store) and publishes the release.
+- **CI (AppVeyor)** produces unsigned user-mode companion installers: `HidHideAppProfiles_x64.msi` and `HidHideAppProfiles_ARM64.msi`.
+- The companion installer never packages or replaces the HidHide kernel driver. Install an official Microsoft-signed HidHide release first.
+- **Local** maintainer machines may Authenticode-sign the MSI and user-mode executables before publishing; this is independent of Secure Boot kernel signing.
 
 ## CI build entrypoint
 
@@ -20,7 +21,7 @@ The MSI builder consumes a flat per-arch staging directory; see [INSTALL_LAYOUT.
 
 ## Local signing
 
-Download CI artifacts for a tag/version and sign MSI/CABs (AppVeyor API token required):
+Download CI artifacts for a tag/version and sign the MSI files (AppVeyor API token required):
 
 ```powershell
 .\release.ps1 -BuildVersion v1.2.3 -Token <appveyor_token>

@@ -23,6 +23,9 @@ public:
     CBlacklistDlg(_In_ CHidHideClientDlg& hidHideClientDlg, _In_opt_ CWnd* pParent);
     virtual ~CBlacklistDlg();
 
+    // Refresh only the global switch after background profile reconciliation.
+    void SynchronizeActiveState();
+
     // Notification handler called when a PnP event of the specified type occurs
     // Be sure to handle Plug and Play device events as quickly as possible
     DWORD OnCmNotificationCallback(_In_ HCMNOTIFICATION cmNotification, _In_ CM_NOTIFY_ACTION cmNotifyAction, _In_reads_bytes_(cmNotifyEventDataSize) PCM_NOTIFY_EVENT_DATA cmNotifyEventData, _In_ DWORD cmNotifyEventDataSize);
@@ -53,6 +56,14 @@ private:
 
     // The item data for the black-list
     HidHide::FriendlyNamesAndHidDeviceInformation m_BlacklistItemData;
+
+    HidHide::DeviceInstancePaths m_DisplayedBlacklist;
+    bool m_DisplayedActive{};
+    bool m_Refreshing{};
+    struct TreeState { HTREEITEM item; UINT state; int image; int selectedImage; };
+    std::vector<TreeState> m_AcknowledgedTree;
+    void AcknowledgeTree();
+    void RestoreTree();
 
     // Controls
     CTreeCtrl       m_Blacklist;

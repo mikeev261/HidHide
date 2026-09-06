@@ -31,12 +31,6 @@ _IRQL_requires_same_
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS HidHideProcessIdCheckFullImageNameAgainstWhitelist(_In_ WDFWAITLOCK wdfWaitLock, _In_ HANDLE processId, _In_ WDFCOLLECTION wdfCollection, _Out_ BOOLEAN* cacheHit);
 
-// Check whether a process image and device path pair occurs in the application profile collection.
-// Profile entries use the internal format "<NT image path>\t<device instance path>".
-_IRQL_requires_same_
-_IRQL_requires_max_(PASSIVE_LEVEL)
-BOOLEAN HidHideProcessIdMatchesApplicationDeviceProfile(_In_ WDFWAITLOCK wdfWaitLock, _In_ HANDLE processId, _In_ WDFCOLLECTION const* wdfCollection, _In_ PCUNICODE_STRING deviceInstancePath);
-
 // Unregister all PIDs and return the new root (NULL)
 _IRQL_requires_same_
 _IRQL_requires_max_(DISPATCH_LEVEL)

@@ -21,7 +21,15 @@
     <ClInclude Include="src\HidHideClientDlg.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\ConfigurationUi.h" />
+    <ClInclude Include="src\ActiveStateView.h" />
     <ClInclude Include="src\AppProfilesDlg.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProfileProcessMatch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProfileManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="stdafx.h">
@@ -74,6 +82,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\AppProfilesDlg.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ProfileManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="stdafx.cpp">

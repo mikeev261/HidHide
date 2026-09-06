@@ -13,8 +13,5 @@
     <PackageReference Include="Nuke.Common" Version="9.0.0" />
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageDownload Include="Nefarius.Tools.WDKWhere" Version="[1.5.0]" />
-  </ItemGroup>
 </Project>
 

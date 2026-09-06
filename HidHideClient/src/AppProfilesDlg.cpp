@@ -6,8 +6,7 @@
 #include "AppProfilesDlg.h"
 #include "Utils.h"
 #include "Volume.h"
-
-#include <TlHelp32.h>
+#include "ConfigurationUi.h"
 
 namespace
 {
@@ -69,10 +68,25 @@ BOOL CAppProfilesDlg::OnInitDialog()
 
 _Use_decl_annotations_
 void CAppProfilesDlg::OnShowWindow(BOOL bShow, UINT nStatus)
+try
 {
     CDialogEx::OnShowWindow(bShow, nStatus);
     if (bShow) RefreshApps();
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 _Use_decl_annotations_
 std::filesystem::path CAppProfilesDlg::DisplayPath(HidHide::FullImageName const& fullImageName) const
@@ -91,10 +105,14 @@ std::filesystem::path CAppProfilesDlg::DisplayPath(HidHide::FullImageName const&
 _Use_decl_annotations_
 void CAppProfilesDlg::RefreshApps(HidHide::FullImageName const* selectProfile)
 {
+    // Keep retrying an incomplete view refresh even when the profile map is unchanged.
+    // In particular, a changed list selection must not leave the previous tree displayed.
+    m_RefreshPending = true;
     auto selection{ selectProfile ? std::optional<HidHide::FullImageName>(*selectProfile) : SelectedProfile() };
 
+    auto const profiles{ FilterDriverProxy().GetAppProfiles() };
     m_AppPaths.clear();
-    for (auto const& [application, devices] : FilterDriverProxy().GetAppProfiles())
+    for (auto const& [application, devices] : profiles)
     {
         UNREFERENCED_PARAMETER(devices);
         m_AppPaths.emplace_back(application);
@@ -124,7 +142,8 @@ void CAppProfilesDlg::RefreshApps(HidHide::FullImageName const* selectProfile)
     if ((LB_ERR == selectedIndex) && (!m_AppPaths.empty())) selectedIndex = 0;
     if (LB_ERR != selectedIndex) m_AppsList.SetCurSel(selectedIndex);
 
-    RefreshDevices();
+    RefreshDevices(profiles);
+    m_RefreshPending = false;
 }
 
 std::optional<HidHide::FullImageName> CAppProfilesDlg::SelectedProfile() const
@@ -167,14 +186,18 @@ std::wstring CAppProfilesDlg::ChildLabel(HidHide::HidDeviceInformation const& de
     return label;
 }
 
-void CAppProfilesDlg::RefreshDevices()
+void CAppProfilesDlg::RefreshDevices(HidHide::AppProfiles const& profiles)
 {
+    auto deviceItemData = HidHide::HidDevices(0 != (m_GamingOnly.GetCheck() & BST_CHECKED));
     m_Refreshing = true;
     m_DevicesTree.DeleteAllItems();
+    m_DisplayedProfiles = profiles;
+    m_SavePending = false;
     m_ParentItems.clear();
     m_ChildItems.clear();
 
     auto const selectedProfile{ SelectedProfile() };
+    m_DisplayedProfile = selectedProfile;
     if (!selectedProfile)
     {
         m_ProfilePath.SetWindowTextW(L"Select an application");
@@ -186,13 +209,11 @@ void CAppProfilesDlg::RefreshDevices()
     auto const displayPath{ DisplayPath(*selectedProfile) };
     m_ProfilePath.SetWindowTextW(displayPath.native().c_str());
 
-    auto const profiles{ FilterDriverProxy().GetAppProfiles() };
     auto const profileIterator{ profiles.find(*selectedProfile) };
     HidHide::DeviceInstancePaths const selectedPaths{ profileIterator == profiles.end() ? HidHide::DeviceInstancePaths{} : profileIterator->second };
 
-    bool const gamingOnly{ 0 != (m_GamingOnly.GetCheck() & BST_CHECKED) };
     bool const showDisconnected{ 0 != (m_ShowDisconnected.GetCheck() & BST_CHECKED) };
-    m_DeviceItemData = HidHide::HidDevices(gamingOnly);
+    m_DeviceItemData = std::move(deviceItemData);
 
     std::map<std::wstring, size_t> friendlyNameCounts;
     for (auto const& container : m_DeviceItemData) friendlyNameCounts[container.first]++;
@@ -232,8 +253,11 @@ void CAppProfilesDlg::UpdateProfileFromTree()
     auto const selectedProfile{ SelectedProfile() };
     if (!selectedProfile) return;
 
-    auto profiles{ FilterDriverProxy().GetAppProfiles() };
-    auto& profilePaths{ profiles[*selectedProfile] };
+    if (selectedProfile != m_DisplayedProfile) throw HidHide::ConfigurationConflict("View needs refresh");
+    auto profiles{ m_DisplayedProfiles };
+    auto profileEntry = profiles.find(*selectedProfile);
+    if (profileEntry == profiles.end()) throw HidHide::ConfigurationConflict("Profile deleted");
+    auto& profilePaths{ profileEntry->second };
     for (auto const& [parent, devices] : m_ParentItems)
     {
         HidHide::DeviceInstancePaths allHidPaths;
@@ -247,13 +271,13 @@ void CAppProfilesDlg::UpdateProfileFromTree()
         }
 
         auto const displayedPaths{ HidHide::HidDevicePathsForSelection(*devices, allHidPaths) };
-        for (auto const& path : displayedPaths) profilePaths.erase(path);
-
         auto const expanded{ HidHide::HidDevicePathsForSelection(*devices, selectedHidPaths) };
-        profilePaths.insert(expanded.begin(), expanded.end());
+        profilePaths = HidHide::ReplaceDisplayedDevicePaths(std::move(profilePaths), displayedPaths, expanded);
     }
 
-    FilterDriverProxy().SetAppProfiles(profiles);
+    FilterDriverProxy().SetAppProfiles(m_DisplayedProfiles, profiles);
+    m_DisplayedProfiles = std::move(profiles);
+    m_SavePending = false;
     UpdateStatus();
 }
 
@@ -262,7 +286,7 @@ void CAppProfilesDlg::UpdateStatus()
     auto const selectedProfile{ SelectedProfile() };
     if (!selectedProfile) return;
 
-    auto const profiles{ FilterDriverProxy().GetAppProfiles() };
+    auto const& profiles{ m_DisplayedProfiles };
     auto const found{ profiles.find(*selectedProfile) };
     size_t selectedInterfaces{};
     if (found != profiles.end())
@@ -271,55 +295,36 @@ void CAppProfilesDlg::UpdateStatus()
             if (found->second.end() != found->second.find(device.second->deviceInstancePath)) selectedInterfaces++;
     }
 
-    bool const running{ IsApplicationRunning(DisplayPath(*selectedProfile)) };
+    bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
     std::wostringstream status;
-    status << (running ? L"Running" : L"Not running") << L" • " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
-    if (!FilterDriverProxy().GetActive()) status << L" • hiding disabled";
+    status << (running ? L"Running" : m_HidHideClientDlg.ProfileIsUnresolved(*selectedProfile) ? L"Path unavailable" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
+    if (!FilterDriverProxy().GetActive()) status << L" \u2022 hiding disabled";
     m_ProfileStatus.SetWindowTextW(status.str().c_str());
 }
 
-_Use_decl_annotations_
-bool CAppProfilesDlg::IsApplicationRunning(std::filesystem::path const& applicationPath) const
-{
-    auto const snapshot{ ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if (INVALID_HANDLE_VALUE == snapshot) return false;
-
-    bool result{ false };
-    PROCESSENTRY32W processEntry{};
-    processEntry.dwSize = sizeof(processEntry);
-    if (::Process32FirstW(snapshot, &processEntry))
-    {
-        do
-        {
-            if (0 != _wcsicmp(processEntry.szExeFile, applicationPath.filename().c_str())) continue;
-
-            HANDLE const process{ ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processEntry.th32ProcessID) };
-            if (nullptr == process)
-            {
-                result = true;
-                break;
-            }
-
-            std::vector<WCHAR> path(UNICODE_STRING_MAX_CHARS);
-            DWORD size{ static_cast<DWORD>(path.size()) };
-            result = ::QueryFullProcessImageNameW(process, 0, path.data(), &size)
-                && (0 == _wcsicmp(path.data(), applicationPath.c_str()));
-            ::CloseHandle(process);
-            if (result) break;
-        } while (::Process32NextW(snapshot, &processEntry));
-    }
-
-    ::CloseHandle(snapshot);
-    return result;
-}
-
 void CAppProfilesDlg::OnLbnSelchangeListApps()
+try
 {
-    RefreshDevices();
+    RefreshApps();
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 _Use_decl_annotations_
 void CAppProfilesDlg::OnTvnItemChangedTreeDevices(NMHDR* pNMHDR, LRESULT* pResult)
+try
 {
     *pResult = 0;
     if (m_Refreshing) return;
@@ -351,10 +356,26 @@ void CAppProfilesDlg::OnTvnItemChangedTreeDevices(NMHDR* pNMHDR, LRESULT* pResul
         m_Refreshing = false;
     }
 
+    m_SavePending = true;
     UpdateProfileFromTree();
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 void CAppProfilesDlg::OnBnClickedButtonAddApp()
+try
 {
     CFileDialog fileDialog(TRUE, L"exe", nullptr, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY, L"Executables (*.exe)|*.exe|All Files (*.*)|*.*||", this);
     if (IDOK != fileDialog.DoModal()) return;
@@ -369,24 +390,97 @@ void CAppProfilesDlg::OnBnClickedButtonAddApp()
     FilterDriverProxy().AppProfileAdd(profile);
     RefreshApps(&profile);
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 void CAppProfilesDlg::OnBnClickedButtonDelApp()
+try
 {
     auto const profile{ SelectedProfile() };
     if (!profile) return;
 
-    FilterDriverProxy().AppProfileDelete(*profile);
+    auto profiles = m_DisplayedProfiles;
+    profiles.erase(*profile);
+    FilterDriverProxy().SetAppProfiles(m_DisplayedProfiles, profiles);
     RefreshApps();
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 void CAppProfilesDlg::OnBnClickedDeviceFilter()
+try
 {
-    RefreshDevices();
+    RefreshApps();
 }
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+}
+
 
 void CAppProfilesDlg::OnTimer(UINT_PTR nIDEvent)
 {
-    if ((1 == nIDEvent) && IsWindowVisible()) UpdateStatus();
+    if ((1 == nIDEvent) && IsWindowVisible())
+    {
+        try
+        {
+            if (m_RefreshPending || (!m_SavePending && FilterDriverProxy().GetAppProfiles() != m_DisplayedProfiles))
+            {
+                RefreshApps();
+            }
+            if (m_SavePending) UpdateProfileFromTree();
+            else UpdateStatus();
+        }
+        catch (HidHide::ConfigurationConflict const& error)
+        {
+            KillTimer(1);
+            ReportConfigurationError(error);
+            m_SavePending = false;
+            m_RefreshPending = true;
+            SetTimer(1, 1000, nullptr);
+        }
+        catch (std::runtime_error const& error)
+        {
+            // Timers retry reads without closing the dialog or opening modal boxes.
+            LOGEXC_AND_CONTINUE;
+            CString status(L"Configuration unavailable or changes not saved; retrying: ");
+            status += CString(error.what());
+            m_ProfileStatus.SetWindowTextW(status);
+        }
+    }
     CDialogEx::OnTimer(nIDEvent);
 }
 
@@ -428,6 +522,7 @@ DROPEFFECT CAppProfilesDlg::OnDragOver(CWnd* pWnd, COleDataObject* pDataObject, 
 
 _Use_decl_annotations_
 DROPEFFECT CAppProfilesDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DROPEFFECT dropDefault, DROPEFFECT dropList, CPoint point)
+try
 {
     UNREFERENCED_PARAMETER(pWnd);
     UNREFERENCED_PARAMETER(pDataObject);
@@ -440,4 +535,18 @@ DROPEFFECT CAppProfilesDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DR
     auto const selected{ *m_DropTargetFullImageNames.begin() };
     RefreshApps(&selected);
     return DROPEFFECT_COPY;
+}
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    m_ProfileStatus.SetWindowTextW(L"Changes were not saved. Repeat the action to retry.");
+    KillTimer(1);
+    ReportConfigurationError(error);
+    SetTimer(1, 1000, nullptr);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error))
+    {
+        m_RefreshPending = true;
+        m_SavePending = false;
+    }
+    return DROPEFFECT_NONE;
 }

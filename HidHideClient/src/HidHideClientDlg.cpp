@@ -119,8 +119,20 @@ BOOL CHidHideClientDlg::OnInitDialog()
     m_AppProfilesDlg.Create(IDD_DIALOG_APP_PROFILES, m_TabApplication.GetWindow(IDD_DIALOG_APP_PROFILES));
     m_AppProfilesDlg.MoveWindow(clientRect);
 
-    m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy);
+    try { m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy); }
+    catch (std::system_error const&)
+    {
+        MessageBoxW(L"HidHide cannot acquire machine-wide profile manager ownership. Another Windows session may "
+            L"already be running the manager, or access to its ownership lock was denied. Close that manager and try again.",
+            L"HidHide profile manager unavailable", MB_OK | MB_ICONWARNING);
+        EndDialog(IDCANCEL);
+        return TRUE;
+    }
     m_ProfileManager->Recover();
+    if (m_ProfileManager->Conflict())
+        MessageBoxW(L"App profiles paused: the saved recovery state cannot safely restore the current driver configuration. "
+            L"The current configuration has been preserved. Review it and restart HidHide to resume profiles.",
+            L"HidHide configuration conflict", MB_OK | MB_ICONWARNING);
     m_ProfileManager->Tick();
     AddTrayIcon();
     SetTimer(PROFILE_TIMER_ID, PROFILE_TIMER_INTERVAL_MS, nullptr);
@@ -173,10 +185,11 @@ void CHidHideClientDlg::UpdateTrayTooltip()
 {
     if (!m_ProfileManager) return;
     auto const activeProfileCount{ m_ProfileManager->ActiveProfileCount() };
-    if (m_LastTrayProfileCount == activeProfileCount) return;
+    if (m_LastTrayProfileCount == activeProfileCount && !m_ProfileManager->Conflict()) return;
 
     std::wostringstream text;
     text << L"HidHide App Profiles";
+    if (m_ProfileManager->Conflict()) text << L" - paused: configuration conflict";
     if (0 != activeProfileCount) text << L" — " << activeProfileCount << L" active";
     m_NotifyIcon.uFlags = NIF_TIP;
     wcsncpy_s(m_NotifyIcon.szTip, text.str().c_str(), _TRUNCATE);
@@ -267,8 +280,14 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
     {
         try
         {
-            m_ProfileManager->Tick();
+            bool const wasConflict = m_ProfileManager->Conflict();
+            try { m_ProfileManager->Tick(); }
+            catch (HidHide::ConfigurationConflict const&) {}
             UpdateTrayTooltip();
+            if (!wasConflict && m_ProfileManager->Conflict())
+                MessageBoxW(L"App profiles paused because the driver configuration changed outside the active profile override. "
+                    L"The current configuration has been preserved. Review it and restart HidHide to resume profiles.",
+                    L"HidHide configuration conflict", MB_OK | MB_ICONWARNING);
         }
         catch (...)
         {

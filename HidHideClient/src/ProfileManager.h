@@ -2,6 +2,7 @@
 #pragma once
 
 #include "FilterDriverProxy.h"
+#include "ConfigurationOwner.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -27,6 +28,7 @@ public:
     // Restore the ordinary Devices-tab configuration before the manager exits.
     void Stop() noexcept;
 
+    bool Conflict() const noexcept { return m_Conflict; }
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
     bool OverrideActive() const noexcept { return m_OverrideActive; }
@@ -51,14 +53,19 @@ private:
     void WorkerMain() noexcept;
     void StopWorker() noexcept;
     void ApplyScanResult(_In_ ScanResult const& result);
-    void SaveRecoveryState() const;
+    void SaveRecoveryState();
     void ClearRecoveryState() const noexcept;
     void RestoreBaseline();
+    void CheckOwnership();
+    void Relinquish() noexcept;
     void ConfigureAutoStart(_In_ bool enabled) const;
 
+    HidHide::ConfigurationOwner m_OwnerLease{ L"Global\\HidHide.ProfileManager" };
     HidHide::FilterDriverProxy& m_FilterDriverProxy;
+    bool m_Conflict{};
+    bool m_RecoveryDirty{};
+    bool m_LastAppliedActive{};
     HidHide::DeviceInstancePaths m_BaselineBlacklist;
-    HidHide::DeviceInstancePaths m_LastProfileDevices;
     HidHide::DeviceInstancePaths m_LastAppliedBlacklist;
     bool m_BaselineActive{ false };
     bool m_OverrideActive{ false };

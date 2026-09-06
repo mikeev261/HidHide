@@ -6,6 +6,7 @@
 #include "HidHideClientDlg.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "ConfigurationUi.h"
 
 // Define user-message for processing device interface arrivals
 constexpr auto WM_USER_CM_NOTIFICATION_REFRESH{ WM_USER + 1 };
@@ -122,7 +123,8 @@ BOOL CBlacklistDlg::OnInitDialog()
     // Reflect the current Active state in the check-box
     m_Filter.SetCheck(BST_CHECKED);
     m_Gaming.SetCheck(BST_CHECKED);
-    m_Enable.SetCheck(FilterDriverProxy().GetActive() ? BST_CHECKED : BST_UNCHECKED);
+    // The posted refresh reads configuration after controls are initialized.
+    Refresh();
 
     // Prepare list icons
     if (nullptr == (m_LockBlank = ::LoadIconW(AfxGetApp()->m_hInstance, MAKEINTRESOURCEW(IDI_ICON_BLACKLIST_LOCK_BLANK)))) THROW_WIN32_LAST_ERROR;
@@ -158,19 +160,24 @@ void CBlacklistDlg::Refresh()
 _Use_decl_annotations_
 LRESULT CBlacklistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
 {
+try
+{
     TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
 
-    // As the strings are referenced be sure to delete the list entries first
+    // Read everything before changing controls, so contention retains the view.
+    auto const deviceInstancePathsBlacklisted{ FilterDriverProxy().GetBlacklist() };
+    auto const active{ FilterDriverProxy().GetActive() };
+    auto devices = HidHide::HidDevices(false);
+    m_Refreshing = true;
+    m_AcknowledgedTree.clear();
     m_Blacklist.UpdateData(FALSE);
     if (FALSE == m_Blacklist.DeleteAllItems()) THROW_WIN32(ERROR_INVALID_PARAMETER);
-
-    // Get the black-listed devices
-    auto const deviceInstancePathsBlacklisted{ FilterDriverProxy().GetBlacklist() };
-
-    // Get the human interface devices and their associated model information
-    m_BlacklistItemData = { HidHide::HidDevices(false) };
+    m_BlacklistItemData = std::move(devices);
+    m_DisplayedBlacklist = deviceInstancePathsBlacklisted;
+    m_DisplayedActive = active;
+    m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED);
 
     // Fill the tree
     for (auto const& topLevelEntry : m_BlacklistItemData)
@@ -248,14 +255,27 @@ LRESULT CBlacklistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
     m_Blacklist.SelectItem(m_Blacklist.GetFirstVisibleItem());
     m_Blacklist.SetFocus();
     m_Blacklist.UpdateData(TRUE);
+    AcknowledgeTree();
+    m_Refreshing = false;
 
     return (0);
+}
+catch (std::runtime_error const& error)
+{
+    m_Refreshing = false;
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+    return 0;
+}
 }
 
 _Use_decl_annotations_
 void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResult)
+try
 {
     TRACE_ALWAYS(L"");
+    *pResult = 0;
+    if (m_Refreshing) return;
     auto const& pNMTVItemChange{ *reinterpret_cast<NMTVITEMCHANGE*>(pNMHDR) };
 
     // Filter-out any event that doesn't relate to changes
@@ -263,6 +283,8 @@ void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResul
     auto const checked { (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & pNMTVItemChange.uStateNew)) };
     auto const hParent { m_Blacklist.GetParentItem(pNMTVItemChange.hItem) };
     auto const topLevel{ (nullptr == hParent) };
+
+    struct RefreshGuard { bool& flag; RefreshGuard(bool& value) : flag(value) { flag = true; } ~RefreshGuard() { flag = false; } } guard(m_Refreshing);
 
     // A top-level change is also applied to all of its children
     if (topLevel)
@@ -318,9 +340,18 @@ void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResul
     }
 
     // Forward the new selection to the filter driver
-    FilterDriverProxy().SetBlacklist(deviceInstancePaths);
+    FilterDriverProxy().SetBlacklist(m_DisplayedBlacklist, deviceInstancePaths);
+    m_DisplayedBlacklist = deviceInstancePaths;
+    AcknowledgeTree();
     *pResult = 0;
 }
+catch (std::runtime_error const& error)
+{
+    RestoreTree();
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+}
+
 
 void CBlacklistDlg::OnBnClickedCheckFilter()
 {
@@ -335,7 +366,47 @@ void CBlacklistDlg::OnBnClickedCheckGaming()
 }
 
 void CBlacklistDlg::OnBnClickedCheckEnable()
+try
 {
     TRACE_ALWAYS(L"");
-    FilterDriverProxy().SetActive(0 != (m_Enable.GetCheck() & BST_CHECKED));
+    bool const active = 0 != (m_Enable.GetCheck() & BST_CHECKED);
+    FilterDriverProxy().SetActive(m_DisplayedActive, active);
+    m_DisplayedActive = active;
+}
+catch (std::runtime_error const& error)
+{
+    m_Enable.SetCheck(m_DisplayedActive ? BST_CHECKED : BST_UNCHECKED);
+    m_Refreshing = false;
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+}
+
+// Retain the rendered control state, including parent icons and composite checks.
+// Rollback must remain available even when configuration reads keep failing.
+void CBlacklistDlg::AcknowledgeTree()
+{
+    std::vector<TreeState> acknowledged;
+    auto capture = [this, &acknowledged](HTREEITEM item)
+    {
+        TreeState state{ item, m_Blacklist.GetItemState(item, TVIS_STATEIMAGEMASK), 0, 0 };
+        m_Blacklist.GetItemImage(item, state.image, state.selectedImage);
+        acknowledged.push_back(state);
+    };
+    for (auto parent = m_Blacklist.GetRootItem(); parent; parent = m_Blacklist.GetNextSiblingItem(parent))
+    {
+        capture(parent);
+        for (auto child = m_Blacklist.GetChildItem(parent); child; child = m_Blacklist.GetNextSiblingItem(child)) capture(child);
+    }
+    m_AcknowledgedTree = std::move(acknowledged);
+}
+
+void CBlacklistDlg::RestoreTree()
+{
+    m_Refreshing = true;
+    for (auto const& state : m_AcknowledgedTree)
+    {
+        m_Blacklist.SetItemState(state.item, state.state, TVIS_STATEIMAGEMASK);
+        m_Blacklist.SetItemImage(state.item, state.image, state.selectedImage);
+    }
+    m_Refreshing = false;
 }

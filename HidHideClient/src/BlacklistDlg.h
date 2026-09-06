@@ -54,6 +54,14 @@ private:
     // The item data for the black-list
     HidHide::FriendlyNamesAndHidDeviceInformation m_BlacklistItemData;
 
+    HidHide::DeviceInstancePaths m_DisplayedBlacklist;
+    bool m_DisplayedActive{};
+    bool m_Refreshing{};
+    struct TreeState { HTREEITEM item; UINT state; int image; int selectedImage; };
+    std::vector<TreeState> m_AcknowledgedTree;
+    void AcknowledgeTree();
+    void RestoreTree();
+
     // Controls
     CTreeCtrl       m_Blacklist;
     HCMNOTIFICATION m_CmNotificationHandle;

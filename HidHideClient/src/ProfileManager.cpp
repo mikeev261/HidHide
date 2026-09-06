@@ -7,6 +7,8 @@
 #include "Volume.h"
 
 #include <TlHelp32.h>
+#include <ktmw32.h>
+#pragma comment(lib, "KtmW32.lib")
 
 namespace
 {
@@ -14,6 +16,8 @@ namespace
     constexpr auto VALUE_OVERRIDE_ACTIVE{ L"OverrideActive" };
     constexpr auto VALUE_BASELINE_ACTIVE{ L"BaselineActive" };
     constexpr auto VALUE_BASELINE_BLACKLIST{ L"BaselineBlacklist" };
+    constexpr auto VALUE_EXPECTED_ACTIVE{ L"ExpectedActive" };
+    constexpr auto VALUE_EXPECTED_BLACKLIST{ L"ExpectedBlacklist" };
     constexpr auto RUN_KEY{ L"Software\\Microsoft\\Windows\\CurrentVersion\\Run" };
     constexpr auto RUN_VALUE{ L"HidHide App Profiles" };
 
@@ -84,12 +88,28 @@ void CProfileManager::Recover()
     bool const valid{ ReadDword(key, VALUE_OVERRIDE_ACTIVE, overrideActive)
         && ReadDword(key, VALUE_BASELINE_ACTIVE, baselineActive)
         && ReadDevicePaths(key, VALUE_BASELINE_BLACKLIST, baselineBlacklist) };
+    DWORD expectedActive{};
+    HidHide::DeviceInstancePaths expectedBlacklist;
+    bool const hasExpected = ReadDword(key, VALUE_EXPECTED_ACTIVE, expectedActive)
+        && ReadDevicePaths(key, VALUE_EXPECTED_BLACKLIST, expectedBlacklist);
     ::RegCloseKey(key);
 
+    // Old records do not identify the effective configuration or its owner.
+    // Restoring them could overwrite another session's edits made after a crash.
     if (valid && (0 != overrideActive))
     {
-        m_FilterDriverProxy.SetBlacklist(baselineBlacklist);
-        m_FilterDriverProxy.SetActive(0 != baselineActive);
+        if (!hasExpected)
+        {
+            Relinquish();
+            return;
+        }
+        m_BaselineBlacklist = baselineBlacklist;
+        m_BaselineActive = 0 != baselineActive;
+        m_LastAppliedBlacklist = expectedBlacklist;
+        m_LastAppliedActive = 0 != expectedActive;
+        m_OverrideActive = true;
+        try { RestoreBaseline(); }
+        catch (HidHide::ConfigurationConflict const&) { Relinquish(); }
     }
     ClearRecoveryState();
 }
@@ -232,27 +252,29 @@ void CProfileManager::StopWorker() noexcept
     if (m_Worker.joinable()) m_Worker.join();
 }
 
-void CProfileManager::SaveRecoveryState() const
+void CProfileManager::SaveRecoveryState()
 {
+    m_RecoveryDirty = true;
+    using Handle = std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)>;
+    Handle transaction{ ::CreateTransaction(nullptr, nullptr, 0, 0, 0, 0, nullptr), &::CloseHandle };
+    if (INVALID_HANDLE_VALUE == transaction.get()) THROW_WIN32_LAST_ERROR;
     HKEY key{};
     DWORD disposition{};
-    auto const status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE, nullptr, &key, &disposition) };
+    auto const status = ::RegCreateKeyTransactedW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE, nullptr, &key, &disposition, transaction.get(), nullptr);
     if (ERROR_SUCCESS != status) THROW_WIN32(status);
-
     try
     {
         WriteDevicePaths(key, VALUE_BASELINE_BLACKLIST, m_BaselineBlacklist);
         WriteDword(key, VALUE_BASELINE_ACTIVE, m_BaselineActive ? 1 : 0);
-        // Write the marker last so an incomplete record is never treated as recoverable.
+        WriteDevicePaths(key, VALUE_EXPECTED_BLACKLIST, m_LastAppliedBlacklist);
+        WriteDword(key, VALUE_EXPECTED_ACTIVE, m_LastAppliedActive ? 1 : 0);
         WriteDword(key, VALUE_OVERRIDE_ACTIVE, 1);
     }
-    catch (...)
-    {
-        ::RegCloseKey(key);
-        throw;
-    }
+    catch (...) { ::RegCloseKey(key); throw; }
     ::RegCloseKey(key);
+    if (!::CommitTransaction(transaction.get())) THROW_WIN32_LAST_ERROR;
+    m_RecoveryDirty = false;
 }
 
 void CProfileManager::ClearRecoveryState() const noexcept
@@ -260,11 +282,33 @@ void CProfileManager::ClearRecoveryState() const noexcept
     ::RegDeleteTreeW(HKEY_CURRENT_USER, RUNTIME_KEY);
 }
 
+void CProfileManager::Relinquish() noexcept
+{
+    m_Conflict = true;
+    m_OverrideActive = false;
+    m_ActiveProfiles.clear();
+    m_ActiveProfileCount = 0;
+    ClearRecoveryState();
+}
+
+void CProfileManager::CheckOwnership()
+{
+    if (m_OverrideActive && (m_FilterDriverProxy.GetBlacklist() != m_LastAppliedBlacklist
+        || m_FilterDriverProxy.GetActive() != m_LastAppliedActive))
+    {
+        Relinquish();
+        throw HidHide::ConfigurationConflict("Profile override changed externally");
+    }
+}
+
 void CProfileManager::RestoreBaseline()
 {
-    m_FilterDriverProxy.SetBlacklist(m_BaselineBlacklist);
-    m_FilterDriverProxy.SetActive(m_BaselineActive);
-    m_LastProfileDevices.clear();
+    CheckOwnership();
+    m_FilterDriverProxy.SetDriverState(m_LastAppliedBlacklist, m_LastAppliedActive, m_BaselineBlacklist, m_BaselineActive,
+        [this] { if (m_LastAppliedBlacklist != m_BaselineBlacklist || m_RecoveryDirty)
+            { m_LastAppliedBlacklist = m_BaselineBlacklist; SaveRecoveryState(); } },
+        [this] { if (m_LastAppliedActive != m_BaselineActive || m_RecoveryDirty)
+            { m_LastAppliedActive = m_BaselineActive; SaveRecoveryState(); } });
     m_LastAppliedBlacklist.clear();
     m_ActiveProfiles.clear();
     m_ActiveProfileCount = 0;
@@ -274,6 +318,8 @@ void CProfileManager::RestoreBaseline()
 
 void CProfileManager::Tick()
 {
+    if (m_Conflict) return;
+    CheckOwnership();
     auto const profiles{ m_FilterDriverProxy.GetAppProfiles() };
     if (!m_HasSubmittedProfiles || (profiles != m_SubmittedProfiles))
     {
@@ -295,7 +341,8 @@ void CProfileManager::Tick()
         result = m_CompletedResult;
         m_AppliedSequence = m_CompletedSequence;
     }
-    ApplyScanResult(result);
+    try { ApplyScanResult(result); }
+    catch (HidHide::ConfigurationConflict const&) { Relinquish(); throw; }
 }
 
 _Use_decl_annotations_
@@ -305,23 +352,7 @@ void CProfileManager::ApplyScanResult(ScanResult const& result)
     m_ActiveProfiles = result.activeProfiles;
     m_ActiveProfileCount = m_ActiveProfiles.size();
 
-    if (m_OverrideActive)
-    {
-        // Changes made in the Devices tab while profiles are active become part of
-        // the baseline, excluding devices supplied by the previous profile union.
-        auto const currentBlacklist{ m_FilterDriverProxy.GetBlacklist() };
-        if (currentBlacklist != m_LastAppliedBlacklist)
-        {
-            m_BaselineBlacklist = currentBlacklist;
-            for (auto const& device : m_LastProfileDevices) m_BaselineBlacklist.erase(device);
-            SaveRecoveryState();
-        }
-        if (!m_FilterDriverProxy.GetActive())
-        {
-            m_BaselineActive = false;
-            SaveRecoveryState();
-        }
-    }
+    CheckOwnership();
 
     if (activeDevices.empty())
     {
@@ -333,16 +364,20 @@ void CProfileManager::ApplyScanResult(ScanResult const& result)
     {
         m_BaselineBlacklist = m_FilterDriverProxy.GetBlacklist();
         m_BaselineActive = m_FilterDriverProxy.GetActive();
-        m_OverrideActive = true;
+        m_LastAppliedBlacklist = m_BaselineBlacklist;
+        m_LastAppliedActive = m_BaselineActive;
         SaveRecoveryState();
+        m_OverrideActive = true;
     }
 
     HidHide::DeviceInstancePaths effective{ m_BaselineBlacklist };
     effective.insert(activeDevices.begin(), activeDevices.end());
-    if (effective != m_FilterDriverProxy.GetBlacklist()) m_FilterDriverProxy.SetBlacklist(effective);
-    if (!m_FilterDriverProxy.GetActive()) m_FilterDriverProxy.SetActive(true);
+    m_FilterDriverProxy.SetDriverState(m_LastAppliedBlacklist, m_LastAppliedActive, effective, true,
+        [this, &effective] { if (m_LastAppliedBlacklist != effective || m_RecoveryDirty)
+            { m_LastAppliedBlacklist = effective; SaveRecoveryState(); } },
+        [this] { if (!m_LastAppliedActive || m_RecoveryDirty)
+            { m_LastAppliedActive = true; SaveRecoveryState(); } });
 
-    m_LastProfileDevices = activeDevices;
     m_LastAppliedBlacklist = std::move(effective);
 }
 

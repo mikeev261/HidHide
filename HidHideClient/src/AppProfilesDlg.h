@@ -36,7 +36,7 @@ private:
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
 
     void RefreshApps(_In_opt_ HidHide::FullImageName const* selectProfile = nullptr);
-    void RefreshDevices();
+    void RefreshDevices(HidHide::AppProfiles const& profiles);
     void UpdateProfileFromTree();
     void UpdateStatus();
     std::optional<HidHide::FullImageName> SelectedProfile() const;
@@ -55,6 +55,10 @@ private:
     std::map<HTREEITEM, std::vector<HidHide::HidDeviceInformation> const*> m_ParentItems;
     std::map<HTREEITEM, HidHide::HidDeviceInformation const*> m_ChildItems;
     HidHide::FullImageNames m_DropTargetFullImageNames;
+    HidHide::AppProfiles m_DisplayedProfiles;
+    std::optional<HidHide::FullImageName> m_DisplayedProfile;
+    bool m_RefreshPending{ false };
+    bool m_SavePending{ false };
     bool m_Refreshing{ false };
 
     afx_msg void OnLbnSelchangeListApps();

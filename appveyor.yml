@@ -13,7 +13,6 @@ test: off
 platform:
 - x64 # ARM64 is built in the same job
 install:
-- cmd: git submodule update --init --recursive
 - ps: Setup-VS2022
 - ps: |
     dotnet tool install --global wix --version 5.0.2
@@ -24,35 +23,16 @@ build:
   parallel: true
   verbosity: minimal
 build_script:
-# MSI staging driver test-sign: optional HIDHIDE_TEST_SIGN_PFX + HIDHIDE_TEST_SIGN_PFX_PASSWORD (encrypted). If unset, CI generates a throwaway code-signing PFX via PowerShell.
 - ps: |
     $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
-    $args = @('Ci', '--configuration', 'Release', '--platform', 'x64')
-    if ($env:HIDHIDE_TEST_SIGN_PFX) {
-      $args += '--hid-hide-test-sign-pfx'; $args += $env:HIDHIDE_TEST_SIGN_PFX
-      if ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { $args += '--hid-hide-test-sign-pfx-password'; $args += $env:HIDHIDE_TEST_SIGN_PFX_PASSWORD }
-    }
-    elseif ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { throw 'HIDHIDE_TEST_SIGN_PFX_PASSWORD is set but HIDHIDE_TEST_SIGN_PFX is not.' }
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" @args
-- ps: |
-    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
-    $args = @('Ci', '--configuration', 'Release', '--platform', 'ARM64')
-    if ($env:HIDHIDE_TEST_SIGN_PFX) {
-      $args += '--hid-hide-test-sign-pfx'; $args += $env:HIDHIDE_TEST_SIGN_PFX
-      if ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { $args += '--hid-hide-test-sign-pfx-password'; $args += $env:HIDHIDE_TEST_SIGN_PFX_PASSWORD }
-    }
-    elseif ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { throw 'HIDHIDE_TEST_SIGN_PFX_PASSWORD is set but HIDHIDE_TEST_SIGN_PFX is not.' }
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" @args
-after_build:
-# Cab generation moved into NUKE target `BuildCab` (part of `Ci`)
+    powershell -ExecutionPolicy Bypass -File ".\build.ps1" Ci --configuration Release --platform x64
+    if ($LASTEXITCODE -ne 0) { throw "x64 companion build failed." }
+    powershell -ExecutionPolicy Bypass -File ".\build.ps1" Ci --configuration Release --platform ARM64
+    if ($LASTEXITCODE -ne 0) { throw "ARM64 companion build failed." }
 artifacts:
   # Forward slashes: AppVeyor resolves these reliably from repo root.
 - path: artifacts/msi/**/*.msi
-- path: disk1/*.cab
-- path: bin/**/*.pdb
-- path: bin/**/HidHide*.exe
-deploy:
-- provider: Environment
-  name: BUILDBOT
-  on:
-    appveyor_repo_tag: true
+- path: bin/Release/**/HidHideClient.pdb
+- path: bin/Release/**/HidHideCLI.pdb
+- path: bin/Release/**/HidHideClient.exe
+- path: bin/Release/**/HidHideCLI.exe

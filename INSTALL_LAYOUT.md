@@ -30,6 +30,8 @@ dotnet tool install --global wix --version 5.0.2
 wix extension add -g WixToolset.UI.wixext/5.0.2
 ```
 
+The default companion build is `.\build.ps1 Ci --configuration Release --platform x64`. See [MAINTENANCE.md](MAINTENANCE.md) for build scope and the executable-before-MSI release signing workflow.
+
 ### Staging directory
 
 Collect `HidHideClient.exe` and `HidHideCLI.exe` into one flat staging folder.

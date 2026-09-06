@@ -1,19 +1,6 @@
-> [!WARNING]
-> **No other official website exists** for this project besides this GitHub repository (github.com/nefarius/HidHide) and sites hosted on `*.nefarius.at` (e.g. docs.nefarius.at, discord.nefarius.at).
->
-> **Anyone claiming otherwise is a scammer and a fraud.** Do not trust other websites, download links, or people claiming to represent this project. Please be wary and only use the sources listed above.
+# <img src="assets/hidhide-128x128.png" align="left" />HidHide App Profiles
 
----
-
-# <img src="assets/hidhide-128x128.png" align="left" />HidHide
-
-[![Build status](https://ci.appveyor.com/api/projects/status/s3t4ffx5fnfw5g65/branch/master?svg=true)](https://ci.appveyor.com/project/nefarius/hidhide/branch/master)
-[![GitHub All Releases](https://img.shields.io/github/downloads/nefarius/HidHide/total)](https://somsubhra.github.io/github-release-stats/?username=nefarius&repository=HidHide)
-[![Chocolatey package](https://img.shields.io/chocolatey/dt/hidhide?color=blue&label=chocolatey)](https://community.chocolatey.org/packages/hidhide)
-![GitHub issues by-label](https://img.shields.io/github/issues/nefarius/HidHide/bug)
-![GitHub issues by-label](https://img.shields.io/github/issues/nefarius/HidHide/enhancement)
-
-Gaming Input Peripherals Device Firewall for Windows.
+A user-mode companion for an existing [official Microsoft-signed HidHide driver](https://github.com/nefarius/HidHide). This fork provides the configuration UI, resident app profile manager, and CLI; it does not distribute a driver. See [installation layout](INSTALL_LAYOUT.md) and [build, release, and maintenance scope](MAINTENANCE.md).
 
 ## Introduction
 
@@ -46,10 +33,7 @@ multiple notifications while binding game functions and device controls.
 
 ## Package content
 
-*HidHide* is a kernel-mode filter driver available for **Windows 10** or higher (KMDF 1.13+). It comes with a configuration
-utility via which the driver is configured and controlled. The filter driver starts automatically and runs unattended
-with system privileges. A system reboot may be triggered after driver installation or removal. The configuration utility
-runs in the least privileged mode and doesn't require elevated rights.
+The companion MSI installs `HidHideClient.exe` and `HidHideCLI.exe` under `%ProgramFiles%\HidHide App Profiles\`. Install the official HidHide driver separately first. The companion never installs, replaces, or removes driver files or services. The configuration utility runs without elevated rights.
 
 ## User guide
 
@@ -129,7 +113,7 @@ otherwise be ambiguous.
 
 ## Package integration
 
-Installation packages and third-party applications can rely on the following two registry keys.
+The separately installed upstream driver package exposes the following registry keys; these are not companion MSI registration keys.
 *"HKCR\Installer\Dependencies\NSS.Drivers.HidHide.x64\Version"* signals the availability of HidHide and its version.
 *"HKCR\SOFTWARE\Nefarius Software Solutions e.U.\Nefarius Software Solutions e.U. HidHide\Path"* tells its location.
 
@@ -147,7 +131,7 @@ Contact us [through Discord](https://discord.nefarius.at/)!
 
 ---
 
-*HidHide* provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
+The separately installed HidHide driver provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
 Tracing can be found under *Applications and Services Logs* and *Nefarius* after enabling *Show Analytic and Debug Logs*.
 Extended tracing is available but switched off per default for performance reasons. Tracing is controlled using the *wevtutil* utility
 which is an integral part of the operating system. To enable extended tracing, open a command shell, and enter the following;

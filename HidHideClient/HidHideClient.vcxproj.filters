@@ -26,6 +26,9 @@
     <ClInclude Include="src\AppProfilesDlg.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\ProfileProcessMatch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\ProfileManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -67,6 +67,12 @@ bool CHidHideClientDlg::ProfileIsActive(HidHide::FullImageName const& profile) c
 }
 
 _Use_decl_annotations_
+bool CHidHideClientDlg::ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept
+{
+    return m_ProfileManager && m_ProfileManager->ProfileIsUnresolved(profile);
+}
+
+_Use_decl_annotations_
 void CHidHideClientDlg::DoDataExchange(CDataExchange* pDX)
 {
     TRACE_ALWAYS(L"");

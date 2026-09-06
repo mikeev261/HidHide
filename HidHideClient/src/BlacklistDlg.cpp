@@ -7,6 +7,7 @@
 #include "Utils.h"
 #include "Logging.h"
 #include "ConfigurationUi.h"
+#include "ActiveStateView.h"
 
 // Define user-message for processing device interface arrivals
 constexpr auto WM_USER_CM_NOTIFICATION_REFRESH{ WM_USER + 1 };
@@ -167,7 +168,7 @@ try
     UNREFERENCED_PARAMETER(lParam);
 
     // Read everything before changing controls, so contention retains the view.
-    auto const deviceInstancePathsBlacklisted{ FilterDriverProxy().GetBlacklist() };
+    auto const deviceInstancePathsBlacklisted{ m_HidHideClientDlg.Baseline() };
     auto const active{ FilterDriverProxy().GetActive() };
     auto devices = HidHide::HidDevices(false);
     m_Refreshing = true;
@@ -264,7 +265,6 @@ catch (std::runtime_error const& error)
 {
     m_Refreshing = false;
     ReportConfigurationError(error);
-    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
     return 0;
 }
 }
@@ -340,7 +340,7 @@ try
     }
 
     // Forward the new selection to the filter driver
-    FilterDriverProxy().SetBlacklist(m_DisplayedBlacklist, deviceInstancePaths);
+    m_HidHideClientDlg.EditBaseline(m_DisplayedBlacklist, deviceInstancePaths);
     m_DisplayedBlacklist = deviceInstancePaths;
     AcknowledgeTree();
     *pResult = 0;
@@ -348,8 +348,8 @@ try
 catch (std::runtime_error const& error)
 {
     RestoreTree();
-    ReportConfigurationError(error);
-    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+    ReportConfigurationError(error, true);
+    Refresh();
 }
 
 
@@ -365,20 +365,27 @@ void CBlacklistDlg::OnBnClickedCheckGaming()
     Refresh();
 }
 
+void CBlacklistDlg::SynchronizeActiveState()
+{
+    if (!m_Enable.GetSafeHwnd()) return;
+    HidHide::SynchronizeActiveState(FilterDriverProxy(), m_DisplayedActive,
+        [this](bool active) { m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED); });
+}
+
 void CBlacklistDlg::OnBnClickedCheckEnable()
 try
 {
     TRACE_ALWAYS(L"");
     bool const active = 0 != (m_Enable.GetCheck() & BST_CHECKED);
-    FilterDriverProxy().SetActive(m_DisplayedActive, active);
+    m_HidHideClientDlg.SetEnabled(m_DisplayedActive, active);
     m_DisplayedActive = active;
 }
 catch (std::runtime_error const& error)
 {
     m_Enable.SetCheck(m_DisplayedActive ? BST_CHECKED : BST_UNCHECKED);
     m_Refreshing = false;
-    ReportConfigurationError(error);
-    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+    ReportConfigurationError(error, true);
+    Refresh();
 }
 
 // Retain the rendered control state, including parent icons and composite checks.

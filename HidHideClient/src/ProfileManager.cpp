@@ -103,11 +103,11 @@ void CProfileManager::Recover()
             Relinquish();
             return;
         }
-        m_BaselineBlacklist = baselineBlacklist;
-        m_BaselineActive = 0 != baselineActive;
-        m_LastAppliedBlacklist = expectedBlacklist;
-        m_LastAppliedActive = 0 != expectedActive;
-        m_OverrideActive = true;
+        m_Policy.baseline = baselineBlacklist;
+        m_Policy.enabled = 0 != baselineActive;
+        m_Policy.expected = expectedBlacklist;
+        m_Policy.expectedEnabled = 0 != expectedActive;
+        m_Policy.overriding = true;
         try { RestoreBaseline(); }
         catch (HidHide::ConfigurationConflict const&) { Relinquish(); }
     }
@@ -254,7 +254,7 @@ void CProfileManager::StopWorker() noexcept
 
 void CProfileManager::SaveRecoveryState()
 {
-    m_RecoveryDirty = true;
+    m_Policy.dirty = true;
     using Handle = std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)>;
     Handle transaction{ ::CreateTransaction(nullptr, nullptr, 0, 0, 0, 0, nullptr), &::CloseHandle };
     if (INVALID_HANDLE_VALUE == transaction.get()) THROW_WIN32_LAST_ERROR;
@@ -265,16 +265,16 @@ void CProfileManager::SaveRecoveryState()
     if (ERROR_SUCCESS != status) THROW_WIN32(status);
     try
     {
-        WriteDevicePaths(key, VALUE_BASELINE_BLACKLIST, m_BaselineBlacklist);
-        WriteDword(key, VALUE_BASELINE_ACTIVE, m_BaselineActive ? 1 : 0);
-        WriteDevicePaths(key, VALUE_EXPECTED_BLACKLIST, m_LastAppliedBlacklist);
-        WriteDword(key, VALUE_EXPECTED_ACTIVE, m_LastAppliedActive ? 1 : 0);
+        WriteDevicePaths(key, VALUE_BASELINE_BLACKLIST, m_Policy.baseline);
+        WriteDword(key, VALUE_BASELINE_ACTIVE, m_Policy.enabled ? 1 : 0);
+        WriteDevicePaths(key, VALUE_EXPECTED_BLACKLIST, m_Policy.expected);
+        WriteDword(key, VALUE_EXPECTED_ACTIVE, m_Policy.expectedEnabled ? 1 : 0);
         WriteDword(key, VALUE_OVERRIDE_ACTIVE, 1);
     }
     catch (...) { ::RegCloseKey(key); throw; }
     ::RegCloseKey(key);
     if (!::CommitTransaction(transaction.get())) THROW_WIN32_LAST_ERROR;
-    m_RecoveryDirty = false;
+    m_Policy.dirty = false;
 }
 
 void CProfileManager::ClearRecoveryState() const noexcept
@@ -285,7 +285,7 @@ void CProfileManager::ClearRecoveryState() const noexcept
 void CProfileManager::Relinquish() noexcept
 {
     m_Conflict = true;
-    m_OverrideActive = false;
+    m_Policy.overriding = false;
     m_ActiveProfiles.clear();
     m_ActiveProfileCount = 0;
     ClearRecoveryState();
@@ -293,8 +293,8 @@ void CProfileManager::Relinquish() noexcept
 
 void CProfileManager::CheckOwnership()
 {
-    if (m_OverrideActive && (m_FilterDriverProxy.GetBlacklist() != m_LastAppliedBlacklist
-        || m_FilterDriverProxy.GetActive() != m_LastAppliedActive))
+    if (m_Policy.overriding && (m_FilterDriverProxy.GetBlacklist() != m_Policy.expected
+        || m_FilterDriverProxy.GetActive() != m_Policy.expectedEnabled))
     {
         Relinquish();
         throw HidHide::ConfigurationConflict("Profile override changed externally");
@@ -304,16 +304,44 @@ void CProfileManager::CheckOwnership()
 void CProfileManager::RestoreBaseline()
 {
     CheckOwnership();
-    m_FilterDriverProxy.SetDriverState(m_LastAppliedBlacklist, m_LastAppliedActive, m_BaselineBlacklist, m_BaselineActive,
-        [this] { if (m_LastAppliedBlacklist != m_BaselineBlacklist || m_RecoveryDirty)
-            { m_LastAppliedBlacklist = m_BaselineBlacklist; SaveRecoveryState(); } },
-        [this] { if (m_LastAppliedActive != m_BaselineActive || m_RecoveryDirty)
-            { m_LastAppliedActive = m_BaselineActive; SaveRecoveryState(); } });
-    m_LastAppliedBlacklist.clear();
+    m_Policy.profileDevices.clear();
+    m_Policy.Apply(m_FilterDriverProxy, [this] { SaveRecoveryState(); });
+    m_Policy.expected.clear();
     m_ActiveProfiles.clear();
     m_ActiveProfileCount = 0;
-    m_OverrideActive = false;
+    m_Policy.overriding = false;
     ClearRecoveryState();
+}
+
+
+HidHide::DeviceInstancePaths CProfileManager::Baseline()
+{
+    CheckOwnership();
+    return m_Policy.overriding ? m_Policy.baseline : m_FilterDriverProxy.GetBlacklist();
+}
+
+void CProfileManager::EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested)
+{
+    CheckOwnership();
+    if (!m_Policy.overriding) { m_FilterDriverProxy.SetBlacklist(displayed, requested); return; }
+    m_Policy.Edit(displayed, requested, [this] { SaveRecoveryState(); });
+    try
+    {
+        m_Policy.Apply(m_FilterDriverProxy, [this] { SaveRecoveryState(); });
+    }
+    catch (HidHide::ConfigurationConflict const&) { Relinquish(); throw; }
+}
+
+void CProfileManager::SetEnabled(bool displayed, bool requested)
+{
+    CheckOwnership();
+    if (!m_Policy.overriding) { m_FilterDriverProxy.SetActive(displayed, requested); return; }
+    m_Policy.Enable(displayed, requested, [this] { SaveRecoveryState(); });
+    try
+    {
+        m_Policy.Apply(m_FilterDriverProxy, [this] { SaveRecoveryState(); });
+    }
+    catch (HidHide::ConfigurationConflict const&) { Relinquish(); throw; }
 }
 
 void CProfileManager::Tick()
@@ -356,29 +384,22 @@ void CProfileManager::ApplyScanResult(ScanResult const& result)
 
     if (activeDevices.empty())
     {
-        if (m_OverrideActive) RestoreBaseline();
+        if (m_Policy.overriding) RestoreBaseline();
         return;
     }
 
-    if (!m_OverrideActive)
+    if (!m_Policy.overriding)
     {
-        m_BaselineBlacklist = m_FilterDriverProxy.GetBlacklist();
-        m_BaselineActive = m_FilterDriverProxy.GetActive();
-        m_LastAppliedBlacklist = m_BaselineBlacklist;
-        m_LastAppliedActive = m_BaselineActive;
+        m_Policy.baseline = m_FilterDriverProxy.GetBlacklist();
+        m_Policy.enabled = m_FilterDriverProxy.GetActive();
+        m_Policy.expected = m_Policy.baseline;
+        m_Policy.expectedEnabled = m_Policy.enabled;
         SaveRecoveryState();
-        m_OverrideActive = true;
+        m_Policy.overriding = true;
     }
 
-    HidHide::DeviceInstancePaths effective{ m_BaselineBlacklist };
-    effective.insert(activeDevices.begin(), activeDevices.end());
-    m_FilterDriverProxy.SetDriverState(m_LastAppliedBlacklist, m_LastAppliedActive, effective, true,
-        [this, &effective] { if (m_LastAppliedBlacklist != effective || m_RecoveryDirty)
-            { m_LastAppliedBlacklist = effective; SaveRecoveryState(); } },
-        [this] { if (!m_LastAppliedActive || m_RecoveryDirty)
-            { m_LastAppliedActive = true; SaveRecoveryState(); } });
-
-    m_LastAppliedBlacklist = std::move(effective);
+    m_Policy.profileDevices = activeDevices;
+    m_Policy.Apply(m_FilterDriverProxy, [this] { SaveRecoveryState(); });
 }
 
 _Use_decl_annotations_
@@ -437,7 +458,7 @@ void CProfileManager::ConfigureAutoStart(bool enabled) const
 
 void CProfileManager::Stop() noexcept
 {
-    if (!m_OverrideActive) return;
+    if (!m_Policy.overriding) return;
     try
     {
         RestoreBaseline();

@@ -12,7 +12,7 @@ A profile manager owns global driver state through a machine-wide lifetime mutex
 
 CLI profile edits are observed by a running manager on its next polling tick. CLI batch edits remain local until commit; an external edit to a changed field raises a conflict rather than being overwritten. Unchanged fields are never written back by a snapshot.
 
-While a profile override is active, driver changes from another tool or the Devices tab pause automatic profiles. A message and tray tooltip report the conflict. Review the preserved configuration in HidHide, close the application, and restart it to adopt that configuration as the new baseline and resume profiles. The conflicting recovery marker is discarded; no automatic stale baseline restoration occurs on exit. Another Windows session cannot run a concurrent profile manager; a denied/busy ownership lock produces an explanatory message.
+While a profile override is active, driver changes from another tool pause automatic profiles. A message and tray tooltip report the conflict. Review the preserved configuration in HidHide, close the application, and restart it to adopt that configuration as the new baseline and resume profiles. The conflicting recovery marker is discarded; no automatic stale baseline restoration occurs on exit. Another Windows session cannot run a concurrent profile manager; a denied/busy ownership lock produces an explanatory message.
 
 ## Limits
 
@@ -20,7 +20,7 @@ There is no atomic transaction spanning driver IOCTLs and registry updates. A su
 
 The global mutex coordinates updated clients; the exclusive driver handle prevents other control-device callers from changing driver state during a conditional operation. Direct registry editing and old clients do not follow the mutex protocol. Registry transactions prevent partial map publication, but do not provide a global revision/CAS protocol for arbitrary noncooperating registry writers. Global-lock ACL failures are surfaced rather than bypassed. Registry transactions require Windows KTM support; transaction failures are reported and are retryable, with no destructive fallback.
 
-Profile baseline-overlap policy (#6) and scan/activation revision races (#5) remain separate work. This change conservatively pauses on baseline edits during an active override instead of attempting an unsafe merge. No driver API, driver binary, installation, or live driver/registry configuration was changed during validation.
+Scan/activation revision races (#5) remain separate work. No driver API, driver binary, installation, or live driver/registry configuration was changed during validation.
 
 ## Validation
 
@@ -77,3 +77,47 @@ simulation would not exercise this defect. The selection A-to-B/read-failure/
 unchanged-map retry transition was inspected in the actual dialog control flow;
 interactive fault injection, including verifying no writes and unchanged backend
 data during refresh failure, remains unperformed. No live configuration was used.
+
+## Permanent Devices selection and global enable (issue #6)
+
+The Devices tree now displays and edits the permanent baseline through the profile
+manager. Running profiles add their device union to that baseline without changing
+which devices are checked. Removing a permanent check does not unhide a device
+still requested by a running profile. When the last profile exits, only temporary
+profile additions are removed. A baseline A plus profile A followed by a permanent
+addition B therefore restores A and B. Overlap-only edits are journaled even when
+the effective driver blacklist is unchanged.
+
+Enable device hiding is the global user switch. Profiles never turn it on.
+Disabling while profiles run stays disabled across further scans, last exit,
+manager shutdown, and matching recovery. The Devices checkbox reads the actual
+driver switch, including after an unsuccessful request. Each profile timer tick
+independently reads the applied switch and updates only that checkbox and its
+displayed edit expectation when changed. This catches deferred enable/disable
+retries without rebuilding the tree or changing focus. Failed reads retain the
+previous view and retry quietly; they cannot suppress profile-conflict reporting.
+
+Permanent intent is saved transactionally with the expected driver state before
+application. If that initial journal save fails, the requested edit is not
+accepted. If a later driver write fails, the saved permanent intent is retained;
+the error explains that it may already be saved, the view reloads it, and later
+scans retry application. An identical disable can retry using the still-enabled
+actual switch. Successful driver writes update the in-memory expectation before
+journal callbacks, preserving retries after a callback failure. The existing
+crash window between driver and journal writes still conservatively conflicts.
+
+The production ProfilePolicy controller is tested with the in-memory configuration
+backend and journal failure injection. Fourteen regressions cover overlapping baseline
+additions/removals, successive profile unions and last exit, overlap-only journal
+updates, global disable and initially disabled state, recovery, driver/journal
+failure retries, stale views, and external effective-state conflicts. The production
+switch synchronization helper is exercised through failed enable and disable,
+background application, a contended read, successful view recovery, unchanged
+polls without writes or rerendering, and the next edit with the updated expectation.
+
+Issue #6 validation: Release x64 Client, CLI, and Tests builds passed using Visual
+Studio 18 MSBuild with an explicit SolutionDir. All 46 tests passed, including 14
+ProfilePolicy regressions, and git diff --check passed. The existing C28251 MFC
+annotation warning remains. No driver changes, installation, live GUI/driver or
+configuration-registry testing, ARM64 compilation, or OS registry fault injection
+was performed; MFC wiring and resource text were compiled and inspected.

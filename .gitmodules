@@ -1,3 +1,0 @@
-[submodule "Watchdog/vcpkg"]
-	path = Watchdog/vcpkg
-	url = https://github.com/microsoft/vcpkg.git

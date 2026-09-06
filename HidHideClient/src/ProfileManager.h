@@ -32,6 +32,7 @@ public:
     bool Conflict() const noexcept { return m_Conflict; }
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ProfileIsUnresolved(_In_ HidHide::FullImageName const& profile) const noexcept;
     bool OverrideActive() const noexcept { return m_Policy.overriding; }
     HidHide::DeviceInstancePaths Baseline();
     void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
@@ -49,6 +50,7 @@ private:
     struct ScanResult
     {
         HidHide::FullImageNames activeProfiles;
+        HidHide::FullImageNames unresolvedProfiles;
         HidHide::DeviceInstancePaths activeDevices;
     };
 
@@ -70,6 +72,7 @@ private:
     HidHide::ProfilePolicy m_Policy;
     size_t m_ActiveProfileCount{};
     HidHide::FullImageNames m_ActiveProfiles;
+    HidHide::FullImageNames m_UnresolvedProfiles;
 
     HidHide::AppProfiles m_SubmittedProfiles;
     bool m_HasSubmittedProfiles{};

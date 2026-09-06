@@ -297,7 +297,7 @@ void CAppProfilesDlg::UpdateStatus()
 
     bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
     std::wostringstream status;
-    status << (running ? L"Running" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
+    status << (running ? L"Running" : m_HidHideClientDlg.ProfileIsUnresolved(*selectedProfile) ? L"Path unavailable" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
     if (!FilterDriverProxy().GetActive()) status << L" \u2022 hiding disabled";
     m_ProfileStatus.SetWindowTextW(status.str().c_str());
 }

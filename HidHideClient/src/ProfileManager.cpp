@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "stdafx.h"
 #include "ProfileManager.h"
+#include "ProfileProcessMatch.h"
 
 #include "Logging.h"
 #include "Utils.h"
@@ -157,35 +158,16 @@ CProfileManager::ScanResult CProfileManager::ScanProfiles(std::vector<PreparedPr
             auto const candidates{ profilesByFileName.find(Normalize(processEntry.szExeFile)) };
             if (profilesByFileName.end() == candidates) continue;
 
-            bool hasFullPath{};
-            std::filesystem::path processPath;
-            HANDLE const process{ ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processEntry.th32ProcessID) };
-            if (nullptr != process)
+            auto const processPath = HidHide::ResolveProfileProcessPath(processEntry.th32ProcessID,
+                ::OpenProcess, ::QueryFullProcessImageNameW, ::CloseHandle);
+            for (auto const index : candidates->second)
             {
-                std::vector<WCHAR> path(32768);
-                DWORD size{ static_cast<DWORD>(path.size()) };
-                if (::QueryFullProcessImageNameW(process, 0, path.data(), &size))
-                {
-                    processPath = std::wstring(path.data(), size);
-                    hasFullPath = true;
-                }
-                ::CloseHandle(process);
-            }
-
-            if (hasFullPath)
-            {
-                for (auto const index : candidates->second)
-                {
-                    auto const& prepared{ profiles[index] };
-                    if (!prepared.displayPath.empty() && (0 == _wcsicmp(prepared.displayPath.native().c_str(), processPath.native().c_str())))
-                        result.activeProfiles.emplace(prepared.profile);
-                }
-            }
-            else if (1 == candidates->second.size())
-            {
-                // Some protected processes reject path queries. Fall back to the
-                // executable name only when it identifies one configured profile.
-                result.activeProfiles.emplace(profiles[candidates->second.front()].profile);
+                auto const& prepared{ profiles[index] };
+                auto const match = HidHide::MatchProfileProcess(prepared.displayPath, processPath);
+                if (HidHide::ProfileProcessMatch::Exact == match)
+                    result.activeProfiles.emplace(prepared.profile);
+                else if (HidHide::ProfileProcessMatch::Unresolved == match)
+                    result.unresolvedProfiles.emplace(prepared.profile);
             }
         } while (::Process32NextW(snapshot, &processEntry));
     }
@@ -378,6 +360,7 @@ void CProfileManager::ApplyScanResult(ScanResult const& result)
 {
     auto const& activeDevices{ result.activeDevices };
     m_ActiveProfiles = result.activeProfiles;
+    m_UnresolvedProfiles = result.unresolvedProfiles;
     m_ActiveProfileCount = m_ActiveProfiles.size();
 
     CheckOwnership();
@@ -406,6 +389,12 @@ _Use_decl_annotations_
 bool CProfileManager::ProfileIsActive(HidHide::FullImageName const& profile) const noexcept
 {
     return m_ActiveProfiles.end() != m_ActiveProfiles.find(profile);
+}
+
+_Use_decl_annotations_
+bool CProfileManager::ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept
+{
+    return !ProfileIsActive(profile) && m_UnresolvedProfiles.end() != m_UnresolvedProfiles.find(profile);
 }
 
 _Use_decl_annotations_

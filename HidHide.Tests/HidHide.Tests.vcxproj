@@ -221,6 +221,7 @@
     <ClCompile Include="..\HidHideCLI\src\CliParsing.cpp" />
     <ClCompile Include="cli_parsing_tests.cpp" />
     <ClCompile Include="configuration_session_tests.cpp" />
+    <ClCompile Include="profile_process_match_tests.cpp" />
     <ClCompile Include="ioctl_contract_tests.cpp" />
   </ItemGroup>
   <Target Name="CheckGoogleTestTargets" BeforeTargets="Build">

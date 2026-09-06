@@ -29,6 +29,7 @@ public:
     void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
     void SetEnabled(bool displayed, bool requested);
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ProfileIsUnresolved(_In_ HidHide::FullImageName const& profile) const noexcept;
 
 private:
 

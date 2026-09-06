@@ -354,6 +354,8 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\HidHideCLI\src\DeviceSelection.h" />
+    <ClInclude Include="src\DeviceSelectionTree.h" />
     <ClInclude Include="..\HidHideCLI\src\FilterDriverProxy.h" />
     <ClInclude Include="..\HidHideCLI\src\HID.h" />
     <ClInclude Include="..\HidHideCLI\src\Logging.h" />
@@ -365,6 +367,7 @@
     <ClInclude Include="src\HidHideClientDlg.h" />
     <ClInclude Include="src\ConfigurationUi.h" />
     <ClInclude Include="src\ActiveStateView.h" />
+    <ClInclude Include="src\PendingDeviceRefresh.h" />
     <ClInclude Include="src\AppProfilesDlg.h" />
     <ClInclude Include="src\IDropTarget.h" />
     <ClInclude Include="src\ProfileManager.h" />

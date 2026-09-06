@@ -92,7 +92,8 @@ The expanded list may mark entries as *absent* or *denied*. *absent* entries app
 These are residual entries in the caches of the operating system, and can be cleaned-up using utilities like *Device Cleanup Tool*.
 *denied* entries appear for hidden devices when the configuration utility itself is not whitelisted.
 
-The *App Profiles* tab applies a different hidden-device set while each configured executable is running. Add an executable
+The *App Profiles* tab adds hidden devices when it detects a configured executable running. Automatic detection is
+**best effort**; it does not guarantee hiding before an application opens a device. Add an executable
 with *+* (or drag it onto the tab) and select the physical devices to hide. Closing the window leaves the profile manager
 running in the notification area; use its tray menu to reopen it or exit and restore the normal Devices-tab configuration.
 The manager starts automatically at sign-in whenever profiles are configured. If multiple profiled applications run at the
@@ -103,6 +104,23 @@ The signed driver exposes a single global hidden-device list, so an active profi
 application, not only the executable that activated it. The manager preserves the normal device list, adds active-profile
 devices to it, restores it when the last profile exits, and records recovery data before each override. An application on
 the *Applications* whitelist retains access to every hidden device.
+
+For reliable hiding at application startup, select the physical devices permanently on the *Devices* tab, turn on
+*Enable device hiding*, and whitelist feeder utilities on *Applications* (with inverse mode off) **before starting the
+game**. Keep the game off the whitelist. Reconnect devices after configuration changes as directed on the Devices tab.
+Profiles supplement these permanent selections; they do not replace them.
+
+The manager scans processes approximately every 500 ms and consumes results on a 100 ms UI timer. These intervals are
+not a deadline: scheduling, configuration dialogs, and errors can delay application of a detected profile. Starting the
+manager first, automatic sign-in startup, or a profile showing *Running* does not establish that hiding preceded a game's
+first device open. The repository driver checks access at device-open time and does not revoke already-open handles.
+An application that opened a controller before hiding took effect can therefore retain access. Close that application,
+configure permanent hiding, and then restart it; waiting for detection does not repair an existing handle. There is no
+apply-profile-then-launch workflow in this client.
+
+This activation contract is based on source inspection, not live verification against an installed signed driver.
+The [manual validation procedure](testing/app-profile-activation.md) covers startup ordering and retained handles;
+validation on the supported installed signed driver remains outstanding.
 
 Physical devices are the primary rows in the profile tree. Expand one only when interface-level control is needed. The
 *Gaming devices only* filter is enabled by default, disconnected devices are hidden by default, and selections excluded by

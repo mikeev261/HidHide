@@ -4,7 +4,8 @@
 #pragma once
 #include "IDropTarget.h"
 #include "FilterDriverProxy.h"
-#include "HID.h"
+#include "DeviceSelectionTree.h"
+#include "PendingDeviceRefresh.h"
 
 class CHidHideClientDlg;
 
@@ -26,9 +27,8 @@ public:
     // Refresh only the global switch after background profile reconciliation.
     void SynchronizeActiveState();
 
-    // Notification handler called when a PnP event of the specified type occurs
-    // Be sure to handle Plug and Play device events as quickly as possible
-    DWORD OnCmNotificationCallback(_In_ HCMNOTIFICATION cmNotification, _In_ CM_NOTIFY_ACTION cmNotifyAction, _In_reads_bytes_(cmNotifyEventDataSize) PCM_NOTIFY_EVENT_DATA cmNotifyEventData, _In_ DWORD cmNotifyEventDataSize);
+    void Refresh(bool background = false);
+    void RetryPendingRefresh();
 
 private:
 
@@ -39,9 +39,6 @@ private:
 
     void DoDataExchange(_In_ CDataExchange* pDX) override;
     BOOL OnInitDialog() override;
-
-    // Post a request to refresh the list
-    void Refresh();
 
     // User Message on CM Notification Callbacks
     LRESULT OnUserMessageRefresh(_In_ WPARAM wParam, _In_ LPARAM lParam);
@@ -55,11 +52,13 @@ private:
     CHidHideClientDlg& m_HidHideClientDlg;
 
     // The item data for the black-list
-    HidHide::FriendlyNamesAndHidDeviceInformation m_BlacklistItemData;
+    DeviceSelectionTree m_Selector;
 
     HidHide::DeviceInstancePaths m_DisplayedBlacklist;
     bool m_DisplayedActive{};
     bool m_Refreshing{};
+    HidHide::PendingDeviceRefresh m_PendingRefresh;
+    void RefreshDevices();
     struct TreeState { HTREEITEM item; UINT state; int image; int selectedImage; };
     std::vector<TreeState> m_AcknowledgedTree;
     void AcknowledgeTree();
@@ -67,7 +66,6 @@ private:
 
     // Controls
     CTreeCtrl       m_Blacklist;
-    HCMNOTIFICATION m_CmNotificationHandle;
     HICON           m_LockOn;
     HICON           m_LockOff;
     HICON           m_LockBlank;

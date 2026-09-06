@@ -23,6 +23,7 @@
     </ClInclude>
     <ClInclude Include="src\ConfigurationUi.h" />
     <ClInclude Include="src\ActiveStateView.h" />
+    <ClInclude Include="src\PendingDeviceRefresh.h" />
     <ClInclude Include="src\AppProfilesDlg.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -46,6 +47,12 @@
     </ClInclude>
     <ClInclude Include="resource.h">
       <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\HidHideCLI\src\DeviceSelection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DeviceSelectionTree.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\HidHideCLI\src\HID.h">
       <Filter>Header Files</Filter>

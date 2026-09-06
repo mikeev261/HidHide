@@ -17,6 +17,15 @@ namespace
     constexpr UINT PROFILE_TIMER_INTERVAL_MS{ 100 };
     constexpr UINT WM_TRAY_ICON{ WM_APP + 1 };
     constexpr UINT WM_HIDE_AFTER_START{ WM_APP + 2 };
+    constexpr UINT WM_DEVICES_CHANGED{ WM_APP + 3 };
+    DWORD CALLBACK DevicesChanged(HCMNOTIFICATION, PVOID context, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA, DWORD)
+    {
+        // The main window unregisters synchronously in OnDestroy, before HWND reuse.
+        // Never access MFC objects or the driver on Configuration Manager's thread.
+        if (action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL)
+            ::PostMessageW(static_cast<HWND>(context), WM_DEVICES_CHANGED, 0, 0);
+        return ERROR_SUCCESS;
+    }
     constexpr UINT TRAY_COMMAND_SHOW{ 1 };
     constexpr UINT TRAY_COMMAND_EXIT{ 2 };
 }
@@ -31,6 +40,7 @@ BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
     ON_WM_TIMER()
     ON_WM_CLOSE()
     ON_WM_DESTROY()
+    ON_MESSAGE(WM_DEVICES_CHANGED, &CHidHideClientDlg::OnDevicesChanged)
     ON_MESSAGE(WM_TRAY_ICON, &CHidHideClientDlg::OnTrayIcon)
     ON_MESSAGE(WM_HIDE_AFTER_START, &CHidHideClientDlg::OnHideAfterStart)
     ON_REGISTERED_MESSAGE(WM_HIDHIDE_SHOW_MANAGER, &CHidHideClientDlg::OnShowManager)
@@ -143,6 +153,9 @@ BOOL CHidHideClientDlg::OnInitDialog()
     AddTrayIcon();
     SetTimer(PROFILE_TIMER_ID, PROFILE_TIMER_INTERVAL_MS, nullptr);
     if (m_StartHidden) PostMessageW(WM_HIDE_AFTER_START);
+    CM_NOTIFY_FILTER filter{ sizeof(CM_NOTIFY_FILTER), CM_NOTIFY_FILTER_FLAG_ALL_INTERFACE_CLASSES, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, 0, 0 };
+    if (auto const result = ::CM_Register_Notification(&filter, m_hWnd, &DevicesChanged, &m_DeviceNotification); result != CR_SUCCESS)
+        THROW_CONFIGRET(result);
 
     return (TRUE);
 }
@@ -306,6 +319,7 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
         // may have changed Active even when reconciliation did not finish.
         try { m_BlacklistDlg.SynchronizeActiveState(); }
         catch (...) { LOGEXC_AND_CONTINUE; }
+        m_BlacklistDlg.RetryPendingRefresh();
     }
     CDialogEx::OnTimer(nIDEvent);
 }
@@ -332,6 +346,11 @@ void CHidHideClientDlg::OnOK()
 
 void CHidHideClientDlg::OnDestroy()
 {
+    if (m_DeviceNotification)
+    {
+        ::CM_Unregister_Notification(m_DeviceNotification);
+        m_DeviceNotification = nullptr;
+    }
     KillTimer(PROFILE_TIMER_ID);
     if (m_ProfileManager) m_ProfileManager->Stop();
     RemoveTrayIcon();
@@ -409,4 +428,11 @@ void CHidHideClientDlg::SetEnabled(bool displayed, bool requested)
 {
     if (m_ProfileManager) m_ProfileManager->SetEnabled(displayed, requested);
     else m_FilterDriverProxy->SetActive(displayed, requested);
+}
+
+LRESULT CHidHideClientDlg::OnDevicesChanged(WPARAM, LPARAM)
+{
+    m_BlacklistDlg.Refresh(true);
+    m_AppProfilesDlg.DevicesChanged();
+    return 0;
 }

@@ -103,6 +103,7 @@ private:
     CWhitelistDlg   m_WhitelistDlg;
     CAppProfilesDlg m_AppProfilesDlg;
 
+    HCMNOTIFICATION m_DeviceNotification{};
     NOTIFYICONDATAW m_NotifyIcon{};
     bool m_StartHidden{};
     bool m_Exiting{};
@@ -116,6 +117,7 @@ private:
     void UpdateTrayTooltip();
 
     // Events
+    afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
     afx_msg void OnPaint();
     afx_msg HCURSOR OnQueryDragIcon();
     afx_msg void OnTcnSelchangeTabApplication(_In_ NMHDR* pNMHDR, _Out_ LRESULT* pResult);

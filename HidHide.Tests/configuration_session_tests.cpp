@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include <gtest/gtest.h>
 #include "ConfigurationSession.h"
+#include "ProfilePolicy.h"
+#include "../HidHideClient/src/ActiveStateView.h"
 #include "ConfigurationOwner.h"
 #include <thread>
 #include <functional>
@@ -288,4 +290,209 @@ TEST(ConfigurationSession, ExclusiveContentionRetainsDisplayedExpectationForRetr
     }
     EXPECT_NO_THROW(gui.SetAppProfiles(displayed, edited));
     EXPECT_EQ(edited, gui.GetAppProfiles());
+}
+namespace
+{
+    struct ProfileHarness
+    {
+        std::shared_ptr<MemoryBackend> backend = std::make_shared<MemoryBackend>();
+        ConfigurationSession driver{backend, ConfigurationMode::Live};
+        ProfilePolicy policy, journal;
+        bool failJournal{};
+        ProfileHarness(DeviceInstancePaths baseline = {L"A"}, bool enabled = true)
+        {
+            backend->blacklist = policy.baseline = policy.expected = baseline;
+            backend->active = policy.enabled = policy.expectedEnabled = enabled;
+            policy.overriding = true;
+            Save();
+        }
+        void Save()
+        {
+            policy.dirty = true;
+            if (failJournal) { failJournal = false; throw std::runtime_error("journal failure"); }
+            journal = policy;
+            policy.dirty = false;
+        }
+        void Scan(DeviceInstancePaths devices)
+        { policy.profileDevices = std::move(devices); policy.Apply(driver, [this] { Save(); }); }
+        void Edit(DeviceInstancePaths shown, DeviceInstancePaths requested)
+        { policy.Edit(shown, requested, [this] { Save(); }); policy.Apply(driver, [this] { Save(); }); }
+        void Enable(bool shown, bool requested)
+        { policy.Enable(shown, requested, [this] { Save(); }); policy.Apply(driver, [this] { Save(); }); }
+        void Recover()
+        { policy = journal; policy.profileDevices.clear(); policy.Apply(driver, [this] { Save(); }); }
+    };
+}
+TEST(ProfilePolicy, OverlappingPermanentDeviceSurvivesAdditionAndLastExit)
+{
+    ProfileHarness h;
+    h.Scan({L"A"});
+    h.Edit({L"A"}, {L"A", L"B"});
+    h.Scan({});
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, MultipleProfilesRemoveOnlyTemporaryDevices)
+{
+    ProfileHarness h;
+    h.Scan({L"A", L"B", L"C"}); // unions of two overlapping profiles
+    h.Edit({L"A"}, {L"C", L"D"}); // remove A, promote C, add D
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B", L"C", L"D"}), h.backend->blacklist);
+    h.Scan({L"B", L"C"}); // first profile exits
+    EXPECT_EQ((DeviceInstancePaths{L"B", L"C", L"D"}), h.backend->blacklist);
+    h.Scan({});
+    EXPECT_EQ((DeviceInstancePaths{L"C", L"D"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, OverlapOnlyEditIsJournaledAndRecovered)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.Edit({L"A"}, {L"A", L"B"});
+    h.Recover();
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, FailedOverlapJournalDoesNotAcceptIntent)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.failJournal = true;
+    EXPECT_THROW(h.Edit({L"A"}, {L"A", L"B"}), std::runtime_error);
+    EXPECT_EQ((DeviceInstancePaths{L"A"}), h.policy.baseline);
+    h.Recover();
+    EXPECT_EQ((DeviceInstancePaths{L"A"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, DisableOverridesScansLastExitAndRecovery)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.Enable(true, false);
+    h.Scan({L"B", L"C"});
+    EXPECT_FALSE(h.backend->active);
+    h.Recover();
+    EXPECT_FALSE(h.backend->active);
+    h.Scan({});
+    EXPECT_FALSE(h.backend->active);
+}
+TEST(ProfilePolicy, InitiallyDisabledProfilesNeverEnableHiding)
+{
+    ProfileHarness h({L"A"}, false);
+    h.Scan({L"B"});
+    EXPECT_FALSE(h.backend->active);
+    h.Scan({});
+    EXPECT_FALSE(h.backend->active);
+}
+TEST(ProfilePolicy, FailedDisableKeepsActualSwitchAndAllowsIdenticalRetry)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.backend->fail = "Active";
+    EXPECT_THROW(h.Enable(true, false), std::runtime_error);
+    EXPECT_FALSE(h.policy.enabled);
+    EXPECT_TRUE(h.policy.expectedEnabled);
+    EXPECT_TRUE(h.backend->active);
+    h.Enable(true, false);
+    EXPECT_FALSE(h.backend->active);
+    h.Recover();
+    EXPECT_FALSE(h.backend->active);
+}
+TEST(ProfilePolicy, DeferredEnableAndDisableSynchronizeActualViewAndNextEdit)
+{
+    for (bool initiallyEnabled : {false, true})
+    {
+        ProfileHarness h({L"A"}, initiallyEnabled);
+        h.Scan({L"B"});
+        bool displayed = initiallyEnabled;
+        std::vector<bool> rendered;
+        auto refresh = [&] { SynchronizeActiveState(h.driver, displayed,
+            [&](bool active) { rendered.push_back(active); }); };
+        h.backend->fail = "Active";
+        EXPECT_THROW(h.Enable(displayed, !initiallyEnabled), std::runtime_error);
+        refresh(); // immediate error refresh must not render pending intent
+        EXPECT_EQ(initiallyEnabled, displayed);
+        EXPECT_TRUE(rendered.empty());
+
+        h.Scan({L"B"}); // background retry applies saved intent
+        {
+            auto lock = h.backend->Acquire();
+            EXPECT_THROW(refresh(), std::runtime_error);
+        }
+        EXPECT_EQ(initiallyEnabled, displayed);
+        EXPECT_TRUE(rendered.empty());
+        auto const writes = h.backend->writes;
+        refresh();
+        refresh(); // stable ticks do not touch the control or write configuration
+        EXPECT_EQ(writes, h.backend->writes);
+        EXPECT_EQ(!initiallyEnabled, displayed);
+        ASSERT_EQ(1u, rendered.size());
+        EXPECT_EQ(!initiallyEnabled, rendered.front());
+        EXPECT_NO_THROW(h.Enable(displayed, initiallyEnabled));
+        EXPECT_EQ(initiallyEnabled, h.backend->active);
+    }
+}
+TEST(ProfilePolicy, AcceptedBaselineSurvivesDriverFailureAndScanRetries)
+{
+    ProfileHarness h;
+    h.Scan({L"A"});
+    h.backend->fail = "Blacklist";
+    EXPECT_THROW(h.Edit({L"A"}, {L"A", L"B"}), std::runtime_error);
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B"}), h.policy.baseline);
+    EXPECT_EQ((DeviceInstancePaths{L"A"}), h.policy.expected);
+    h.Scan({L"A"});
+    h.Recover();
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, ExternalEditsAndStaleViewsAreRejected)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    EXPECT_THROW(h.Edit({}, {L"C"}), ConfigurationConflict);
+    h.backend->blacklist = {L"external"};
+    EXPECT_THROW(h.Scan({L"C"}), ConfigurationConflict);
+    EXPECT_EQ((DeviceInstancePaths{L"external"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, FailedPostWriteJournalRetainsExpectedStateForRetry)
+{
+    ProfileHarness h;
+    h.failJournal = true;
+    EXPECT_THROW(h.Scan({L"B"}), std::runtime_error);
+    EXPECT_EQ(h.backend->blacklist, h.policy.expected);
+    EXPECT_TRUE(h.policy.dirty);
+    h.Scan({L"B"});
+    h.Recover();
+    EXPECT_EQ((DeviceInstancePaths{L"A"}), h.backend->blacklist);
+}
+TEST(ProfilePolicy, PartialDriverWriteRecoversSavedIntent)
+{
+    ProfileHarness h;
+    h.policy.Edit({L"A"}, {L"A", L"C"}, [&] { h.Save(); });
+    h.policy.Enable(true, false, [&] { h.Save(); });
+    h.backend->fail = "Active";
+    EXPECT_THROW(h.Scan({L"B"}), std::runtime_error);
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B", L"C"}), h.backend->blacklist);
+    EXPECT_TRUE(h.backend->active);
+    EXPECT_EQ(h.backend->blacklist, h.journal.expected);
+    EXPECT_TRUE(h.journal.expectedEnabled);
+    h.Recover();
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"C"}), h.backend->blacklist);
+    EXPECT_FALSE(h.backend->active);
+}
+TEST(ProfilePolicy, FailedInitialDisableJournalPreservesSwitchIntent)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.failJournal = true;
+    EXPECT_THROW(h.Enable(true, false), std::runtime_error);
+    EXPECT_TRUE(h.policy.enabled);
+    EXPECT_TRUE(h.backend->active);
+    h.Scan({L"C"});
+    h.Recover();
+    EXPECT_TRUE(h.backend->active);
+}
+TEST(ProfilePolicy, RecoveryCannotOverwriteExternalDisable)
+{
+    ProfileHarness h;
+    h.Scan({L"B"});
+    h.backend->active = false;
+    EXPECT_THROW(h.Recover(), ConfigurationConflict);
+    EXPECT_FALSE(h.backend->active);
+    EXPECT_EQ((DeviceInstancePaths{L"A", L"B"}), h.backend->blacklist);
 }

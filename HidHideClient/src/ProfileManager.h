@@ -3,6 +3,7 @@
 
 #include "FilterDriverProxy.h"
 #include "ConfigurationOwner.h"
+#include "ProfilePolicy.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -31,7 +32,10 @@ public:
     bool Conflict() const noexcept { return m_Conflict; }
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
-    bool OverrideActive() const noexcept { return m_OverrideActive; }
+    bool OverrideActive() const noexcept { return m_Policy.overriding; }
+    HidHide::DeviceInstancePaths Baseline();
+    void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
+    void SetEnabled(bool displayed, bool requested);
 
 private:
     struct PreparedProfile
@@ -63,12 +67,7 @@ private:
     HidHide::ConfigurationOwner m_OwnerLease{ L"Global\\HidHide.ProfileManager" };
     HidHide::FilterDriverProxy& m_FilterDriverProxy;
     bool m_Conflict{};
-    bool m_RecoveryDirty{};
-    bool m_LastAppliedActive{};
-    HidHide::DeviceInstancePaths m_BaselineBlacklist;
-    HidHide::DeviceInstancePaths m_LastAppliedBlacklist;
-    bool m_BaselineActive{ false };
-    bool m_OverrideActive{ false };
+    HidHide::ProfilePolicy m_Policy;
     size_t m_ActiveProfileCount{};
     HidHide::FullImageNames m_ActiveProfiles;
 

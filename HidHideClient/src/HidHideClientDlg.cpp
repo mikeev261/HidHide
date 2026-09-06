@@ -294,6 +294,13 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
             LOGEXC_AND_CONTINUE;
         }
     }
+    if (PROFILE_TIMER_ID == nIDEvent)
+    {
+        // Independent of Tick failures and conflict notification: partial writes
+        // may have changed Active even when reconciliation did not finish.
+        try { m_BlacklistDlg.SynchronizeActiveState(); }
+        catch (...) { LOGEXC_AND_CONTINUE; }
+    }
     CDialogEx::OnTimer(nIDEvent);
 }
 
@@ -384,3 +391,16 @@ LRESULT CHidHideClientDlg::OnTaskbarCreated(WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+
+HidHide::DeviceInstancePaths CHidHideClientDlg::Baseline()
+{ return m_ProfileManager ? m_ProfileManager->Baseline() : m_FilterDriverProxy->GetBlacklist(); }
+void CHidHideClientDlg::EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested)
+{
+    if (m_ProfileManager) m_ProfileManager->EditBaseline(displayed, requested);
+    else m_FilterDriverProxy->SetBlacklist(displayed, requested);
+}
+void CHidHideClientDlg::SetEnabled(bool displayed, bool requested)
+{
+    if (m_ProfileManager) m_ProfileManager->SetEnabled(displayed, requested);
+    else m_FilterDriverProxy->SetActive(displayed, requested);
+}

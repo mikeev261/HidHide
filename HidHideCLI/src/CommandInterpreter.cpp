@@ -31,7 +31,7 @@ namespace HidHide
             if (!errorMessage.empty())
             {
                 std::wcerr << errorMessage << std::endl;
-                if (!m_InteractiveMode) return;
+                if (!m_InteractiveMode) throw std::runtime_error("Command rejected; no configuration changes were applied");
             }
 
             // Bail out on cancellation

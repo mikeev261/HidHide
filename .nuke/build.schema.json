@@ -29,6 +29,7 @@
         "Ci",
         "Clean",
         "Compile",
+        "CompileDriver",
         "Restore",
         "StageInstallerPayload",
         "TestSignStagingDriver",
@@ -106,6 +107,10 @@
   "allOf": [
     {
       "properties": {
+        "CompilerPath": {
+          "type": "string",
+          "description": "Optional MSBuild.exe path when NUKE cannot discover the installed Visual Studio version"
+        },
         "Configuration": {
           "type": "string",
           "description": "Configuration to build - Default is 'Debug' (local) or 'Release' (server)"

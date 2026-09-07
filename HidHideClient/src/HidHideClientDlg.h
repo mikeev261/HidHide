@@ -7,6 +7,7 @@
 #include "WhitelistDlg.h"
 #include "AppProfilesDlg.h"
 #include "ProfileManager.h"
+#include "ConfigurationChannel.h"
 
 extern UINT const WM_HIDHIDE_SHOW_MANAGER;
 
@@ -26,6 +27,8 @@ public:
     // Allow child dialogs access to the shared filter driver proxy
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ApplyConfigurationEdit(std::function<void()> const& edit);
+    bool EffectiveHidingEnabled() const;
 
 private:
 
@@ -88,6 +91,7 @@ private:
     // Acquire exclusive access to the filter driver
     std::unique_ptr<HidHide::FilterDriverProxy> m_FilterDriverProxy;
     std::unique_ptr<CProfileManager> m_ProfileManager;
+    std::unique_ptr<HidHide::Channel::Server> m_ConfigurationServer;
 
     // Drop file support
     CDropTarget m_DropTarget;
@@ -104,6 +108,7 @@ private:
     bool m_Exiting{};
     bool m_HideNoticeShown{};
     size_t m_LastTrayProfileCount{ static_cast<size_t>(-1) };
+    std::wstring m_LastStatus;
 
     void AddTrayIcon();
     void RemoveTrayIcon() noexcept;

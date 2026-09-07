@@ -134,7 +134,7 @@ DROPEFFECT CWhitelistDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DROP
     // When there are new entries then update the whitelist accordingly and refresh the screen
     if (dirty)
     {
-        FilterDriverProxy().SetWhitelist(whitelist);
+        m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetWhitelist(whitelist); });
         Refresh();
     }
 
@@ -197,6 +197,7 @@ void CWhitelistDlg::Refresh()
 _Use_decl_annotations_
 LRESULT CWhitelistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
 {
+    m_Inverse.SetCheck(FilterDriverProxy().GetInverse() ? BST_CHECKED : BST_UNCHECKED);
     TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
@@ -245,7 +246,7 @@ void CWhitelistDlg::OnBnClickedButtonWhitelistInsert()
         // No duplicates so add it
         if (auto const result{ m_Whitelist.AddString(fullImageName) }; (LB_ERR == result) || (LB_ERRSPACE == result)) THROW_WIN32(ERROR_INVALID_PARAMETER);
 
-        FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist));
+        m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist)); });
         Refresh();
     }
 }
@@ -268,12 +269,12 @@ void CWhitelistDlg::OnBnClickedButtonWhitelistDelete()
         if (LB_ERR == m_Whitelist.DeleteString(itemsSelected[index])) THROW_WIN32(ERROR_INVALID_PARAMETER);
     }
 
-    FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist));
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist)); });
     Refresh();
 }
 
 void CWhitelistDlg::OnBnClickedCheckInverse()
 {
     TRACE_ALWAYS(L"");
-    FilterDriverProxy().SetInverse(0 != (m_Inverse.GetCheck() & BST_CHECKED));
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetInverse(0 != (m_Inverse.GetCheck() & BST_CHECKED)); });
 }

@@ -30,6 +30,14 @@ public:
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
     bool OverrideActive() const noexcept { return m_OverrideActive; }
+    std::wstring Status() const { return m_Status; }
+    void AdoptExternalState();
+    void Resume();
+    void Pause();
+    bool HasConflict() const { return m_Conflict; }
+    bool EffectiveActive() const { return m_Expected.active; }
+    void ExitSafely();
+    void ReportFailure(std::string const& message) { m_Status = std::wstring(message.begin(), message.end()); }
 
 private:
     struct PreparedProfile
@@ -42,6 +50,8 @@ private:
 
     struct ScanResult
     {
+        std::uint64_t revision{};
+        bool complete{ true };
         HidHide::FullImageNames activeProfiles;
         HidHide::DeviceInstancePaths activeDevices;
     };
@@ -51,16 +61,23 @@ private:
     void WorkerMain() noexcept;
     void StopWorker() noexcept;
     void ApplyScanResult(_In_ ScanResult const& result);
-    void SaveRecoveryState() const;
-    void ClearRecoveryState() const noexcept;
+    void SaveRecoveryState(HidHide::Configuration const& baseline, HidHide::Configuration const& before, HidHide::Configuration const& after);
+    void ClearRecoveryState();
     void RestoreBaseline();
     void ConfigureAutoStart(_In_ bool enabled) const;
+    HidHide::Configuration ReadUserConfiguration();
+    void CommitUserConfiguration(HidHide::Configuration const& expected, HidHide::Configuration const& desired, bool disable);
+    void Observe();
+    void Transition(HidHide::Configuration const& baseline, HidHide::DeviceInstancePaths const& devices, bool suspended);
 
     HidHide::FilterDriverProxy& m_FilterDriverProxy;
-    HidHide::DeviceInstancePaths m_BaselineBlacklist;
+    HidHide::Configuration m_Baseline;
+    HidHide::Configuration m_Expected;
     HidHide::DeviceInstancePaths m_LastProfileDevices;
-    HidHide::DeviceInstancePaths m_LastAppliedBlacklist;
-    bool m_BaselineActive{ false };
+    bool m_Suspended{};
+    bool m_Conflict{};
+    bool m_JournalPending{};
+    std::wstring m_Status{ L"Starting" };
     bool m_OverrideActive{ false };
     size_t m_ActiveProfileCount{};
     HidHide::FullImageNames m_ActiveProfiles;
@@ -75,5 +92,6 @@ private:
     std::uint64_t m_AppliedSequence{};
     ScanResult m_CompletedResult;
     bool m_StopRequested{};
+    bool m_WorkerFailed{};
     std::thread m_Worker;
 };

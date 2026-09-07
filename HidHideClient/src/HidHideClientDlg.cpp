@@ -19,6 +19,9 @@ namespace
     constexpr UINT WM_HIDE_AFTER_START{ WM_APP + 2 };
     constexpr UINT TRAY_COMMAND_SHOW{ 1 };
     constexpr UINT TRAY_COMMAND_EXIT{ 2 };
+    constexpr UINT TRAY_COMMAND_ACCEPT_CURRENT{ 3 };
+    constexpr UINT TRAY_COMMAND_RESUME{ 4 };
+    constexpr UINT TRAY_COMMAND_PAUSE{ 5 };
 }
 
 #pragma warning(push)
@@ -60,6 +63,22 @@ HidHide::FilterDriverProxy& CHidHideClientDlg::FilterDriverProxy() noexcept
     return (*m_FilterDriverProxy.get());
 }
 
+bool CHidHideClientDlg::ApplyConfigurationEdit(std::function<void()> const& edit)
+{
+    try { edit(); return true; }
+    catch (std::exception const& error)
+    {
+        ::MessageBoxA(m_hWnd, error.what(), "HidHide configuration was not confirmed", MB_OK | MB_ICONWARNING);
+        try { m_FilterDriverProxy->Refresh(); } catch (...) { /* Keep last confirmed settings until the driver is available. */ }
+        return false;
+    }
+}
+
+bool CHidHideClientDlg::EffectiveHidingEnabled() const
+{
+    return m_ProfileManager ? m_ProfileManager->EffectiveActive() : m_FilterDriverProxy->GetActive();
+}
+
 _Use_decl_annotations_
 bool CHidHideClientDlg::ProfileIsActive(HidHide::FullImageName const& profile) const noexcept
 {
@@ -79,8 +98,7 @@ BOOL CHidHideClientDlg::OnInitDialog()
     TRACE_ALWAYS(L"");
     CDialogEx::OnInitDialog();
 
-    // Acquire exclusive access to the filter driver
-    m_FilterDriverProxy = std::make_unique<HidHide::FilterDriverProxy>(true);
+    m_FilterDriverProxy = std::make_unique<HidHide::FilterDriverProxy>(true, true);
 
     // Register this window as a drop target
     m_DropTarget.Register(this);
@@ -121,6 +139,7 @@ BOOL CHidHideClientDlg::OnInitDialog()
 
     m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy);
     m_ProfileManager->Recover();
+    m_ConfigurationServer = std::make_unique<HidHide::Channel::Server>();
     m_ProfileManager->Tick();
     AddTrayIcon();
     SetTimer(PROFILE_TIMER_ID, PROFILE_TIMER_INTERVAL_MS, nullptr);
@@ -173,15 +192,19 @@ void CHidHideClientDlg::UpdateTrayTooltip()
 {
     if (!m_ProfileManager) return;
     auto const activeProfileCount{ m_ProfileManager->ActiveProfileCount() };
-    if (m_LastTrayProfileCount == activeProfileCount) return;
+    auto const status = m_ProfileManager->Status();
+    if (m_LastTrayProfileCount == activeProfileCount && m_LastStatus == status) return;
 
     std::wostringstream text;
     text << L"HidHide App Profiles";
-    if (0 != activeProfileCount) text << L" — " << activeProfileCount << L" active";
+    if (0 != activeProfileCount) text << L" - " << activeProfileCount << L" detected";
+    text << L" - " << status;
+    SetWindowTextW(text.str().c_str());
     m_NotifyIcon.uFlags = NIF_TIP;
     wcsncpy_s(m_NotifyIcon.szTip, text.str().c_str(), _TRUNCATE);
     ::Shell_NotifyIconW(NIM_MODIFY, &m_NotifyIcon);
     m_LastTrayProfileCount = activeProfileCount;
+    m_LastStatus = status;
 }
 
 void CHidHideClientDlg::OnPaint()
@@ -267,7 +290,21 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
     {
         try
         {
+            auto const before = m_FilterDriverProxy->CachedConfiguration();
+            if (m_ConfigurationServer) m_ConfigurationServer->Pump([this](auto const& request) { return m_FilterDriverProxy->HandleRequest(request); });
             m_ProfileManager->Tick();
+            m_BlacklistDlg.RefreshEnabledState();
+            if (before != m_FilterDriverProxy->CachedConfiguration())
+            {
+                m_BlacklistDlg.RefreshConfiguration();
+                m_WhitelistDlg.RefreshConfiguration();
+                m_AppProfilesDlg.RefreshConfiguration();
+            }
+            UpdateTrayTooltip();
+        }
+        catch (std::exception const& error)
+        {
+            m_ProfileManager->ReportFailure(error.what());
             UpdateTrayTooltip();
         }
         catch (...)
@@ -301,6 +338,7 @@ void CHidHideClientDlg::OnOK()
 void CHidHideClientDlg::OnDestroy()
 {
     KillTimer(PROFILE_TIMER_ID);
+    m_ConfigurationServer.reset();
     if (m_ProfileManager) m_ProfileManager->Stop();
     RemoveTrayIcon();
     CDialogEx::OnDestroy();
@@ -320,6 +358,10 @@ LRESULT CHidHideClientDlg::OnTrayIcon(WPARAM wParam, LPARAM lParam)
         CMenu menu;
         menu.CreatePopupMenu();
         menu.AppendMenuW(MF_STRING, TRAY_COMMAND_SHOW, L"Open HidHide App Profiles");
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_PAUSE, L"Pause automatic profiles and restore baseline");
+        if (m_ProfileManager->HasConflict())
+            menu.AppendMenuW(MF_STRING, TRAY_COMMAND_ACCEPT_CURRENT, L"Resolve conflict: accept current driver settings");
+        menu.AppendMenuW(MF_STRING, TRAY_COMMAND_RESUME, L"Resume automatic profiles");
         menu.AppendMenuW(MF_SEPARATOR);
         menu.AppendMenuW(MF_STRING, TRAY_COMMAND_EXIT, L"Exit and restore device settings");
 
@@ -328,10 +370,18 @@ LRESULT CHidHideClientDlg::OnTrayIcon(WPARAM wParam, LPARAM lParam)
         SetForegroundWindow();
         auto const command{ menu.TrackPopupMenu(TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, this) };
         if (TRAY_COMMAND_SHOW == command) ShowFromTray();
+        try
+        {
+            if (TRAY_COMMAND_ACCEPT_CURRENT == command) m_ProfileManager->AdoptExternalState();
+            if (TRAY_COMMAND_RESUME == command) m_ProfileManager->Resume();
+            if (TRAY_COMMAND_PAUSE == command) m_ProfileManager->Pause();
+            UpdateTrayTooltip();
+        }
+        catch (std::exception const& error) { ::MessageBoxA(m_hWnd, error.what(), "HidHide configuration", MB_OK | MB_ICONERROR); }
         if (TRAY_COMMAND_EXIT == command)
         {
-            m_Exiting = true;
-            CDialogEx::OnCancel();
+            try { m_ProfileManager->ExitSafely(); m_Exiting = true; CDialogEx::OnCancel(); }
+            catch (std::exception const& error) { ::MessageBoxA(m_hWnd, error.what(), "HidHide restoration was not confirmed", MB_OK | MB_ICONERROR); }
         }
     }
     return 0;

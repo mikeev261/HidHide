@@ -26,6 +26,9 @@ class Build : NukeBuild
     [Parameter("Platform to build: x64 | ARM64. Default is current CI platform or x64 locally.")]
     readonly string Platform = IsLocalBuild ? "x64" : (AppVeyor.Instance.Platform ?? "x64");
 
+    [Parameter("Optional MSBuild.exe path when NUKE cannot discover the installed Visual Studio version.")]
+    readonly string? CompilerPath;
+
     [Parameter("Optional path to PFX for CI test-signing MSI staging driver files. If omitted or missing, a throwaway code-signing PFX is generated (see AppVeyor env HIDHIDE_TEST_SIGN_PFX).")]
     readonly string? HidHideTestSignPfx;
 
@@ -71,40 +74,31 @@ class Build : NukeBuild
         .Executes(() =>
         {
             EnsureGoogleTestNuGetPackage();
-            MSBuild(s => s
-                .SetTargetPath(SolutionFile)
-                .SetTargets("Restore")
-                .SetVerbosity(MSBuildVerbosity.Minimal));
         });
 
     Target Compile => _ => _
         .DependsOn(Restore)
         .Executes(() =>
         {
-            var platform = ParsePlatform(Platform);
-
-            MSBuild(s => s
-                .SetTargetPath(SolutionFile)
-                .SetTargets("Rebuild")
-                .SetConfiguration(Configuration)
-                .SetTargetPlatform(platform)
-                .SetMaxCpuCount(Environment.ProcessorCount)
-                .SetNodeReuse(IsLocalBuild)
-                .SetVerbosity(MSBuildVerbosity.Minimal));
+            foreach (var project in new[] { "HidHideCLI", "HidHideClient", "HidHide.Tests" })
+                BuildProject(project);
         });
 
     Target UnitTest => _ => _
         .DependsOn(Compile)
-        // CI (AppVeyor) builds ARM64 on an x64 host; ARM64 test binaries cannot be executed here.
+        // Cross-compilation is not runtime validation. Execute ARM64 only on ARM64 Windows.
         .OnlyWhenStatic(() => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            && Platform.Equals("x64", StringComparison.OrdinalIgnoreCase))
+            && (Platform.Equals("x64", StringComparison.OrdinalIgnoreCase)
+                || RuntimeInformation.OSArchitecture == Architecture.Arm64))
         .Executes(() =>
         {
             var testExe = OutputRoot / "HidHide.Tests.exe";
             if (!File.Exists(testExe))
                 throw new FileNotFoundException($"Expected unit test runner at '{testExe}'. Build HidHide.Tests for {Configuration}|{Platform}.");
 
-            ProcessTasks.StartProcess(testExe, workingDirectory: OutputRoot, logInvocation: false)
+            var results = ArtifactsDirectory / "tests" / Platform;
+            EnsureExistingDirectory(results);
+            ProcessTasks.StartProcess(testExe, $"--gtest_output=xml:\"{results / "results.xml"}\"", workingDirectory: OutputRoot, logInvocation: false)
                 .AssertZeroExitCode();
         });
 
@@ -239,7 +233,7 @@ class Build : NukeBuild
         });
 
     Target BuildCab => _ => _
-        .DependsOn(Compile)
+        .DependsOn(CompileDriver)
         .Executes(() =>
         {
             // Keep legacy DDF-driven attestation cab generation.
@@ -253,10 +247,25 @@ class Build : NukeBuild
 
     Target Ci => _ => _
         .DependsOn(UnitTest)
-        .DependsOn(BuildMsi)
-        .DependsOn(BuildCab);
+        .DependsOn(BuildMsi);
 
-    public static int Main() => Execute<Build>(x => x.Ci);
+    Target CompileDriver => _ => _
+        .Executes(() => BuildProject("HidHide"));
+
+    void BuildProject(string project)
+    {
+        ParsePlatform(Platform);
+        var logs = ArtifactsDirectory / "logs" / Platform;
+        EnsureExistingDirectory(logs);
+        var compiler = CompilerPath ?? ToolPathResolver.GetPathExecutable("MSBuild.exe");
+        ProcessTasks.StartProcess(compiler,
+            $"\"{RootDirectory / project / (project + ".vcxproj")}\" /t:Rebuild " +
+            $"/p:Configuration=\"{Configuration}\" /p:Platform={Platform} " +
+            $"/p:SolutionDir=\"{RootDirectory}/\" /m /nr:false /v:minimal " +
+            $"/bl:\"{logs / (project + ".binlog")}\"", RootDirectory).AssertZeroExitCode();
+    }
+
+    public static int Main() => Execute<Build>(x => x.UnitTest);
 
     /// <summary>Downloads and extracts the Microsoft Google Test NuGet package if missing (ignored by git under /packages).</summary>
     void EnsureGoogleTestNuGetPackage()

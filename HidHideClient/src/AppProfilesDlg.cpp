@@ -251,7 +251,7 @@ void CAppProfilesDlg::UpdateProfileFromTree()
         profilePaths.insert(expanded.begin(), expanded.end());
     }
 
-    FilterDriverProxy().SetAppProfiles(profiles);
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetAppProfiles(profiles); });
     UpdateStatus();
 }
 
@@ -272,7 +272,7 @@ void CAppProfilesDlg::UpdateStatus()
     bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
     std::wostringstream status;
     status << (running ? L"Running" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
-    if (!FilterDriverProxy().GetActive()) status << L" \u2022 hiding disabled";
+    if (!m_HidHideClientDlg.EffectiveHidingEnabled()) status << L" \u2022 hiding disabled";
     m_ProfileStatus.SetWindowTextW(status.str().c_str());
 }
 
@@ -329,7 +329,7 @@ void CAppProfilesDlg::OnBnClickedButtonAddApp()
         return;
     }
 
-    FilterDriverProxy().AppProfileAdd(profile);
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().AppProfileAdd(profile); });
     RefreshApps(&profile);
 }
 
@@ -338,7 +338,7 @@ void CAppProfilesDlg::OnBnClickedButtonDelApp()
     auto const profile{ SelectedProfile() };
     if (!profile) return;
 
-    FilterDriverProxy().AppProfileDelete(*profile);
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().AppProfileDelete(*profile); });
     RefreshApps();
 }
 
@@ -399,7 +399,7 @@ DROPEFFECT CAppProfilesDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DR
     UNREFERENCED_PARAMETER(point);
 
     if (m_DropTargetFullImageNames.empty()) return DROPEFFECT_NONE;
-    for (auto const& profile : m_DropTargetFullImageNames) FilterDriverProxy().AppProfileAdd(profile);
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { for (auto const& profile : m_DropTargetFullImageNames) FilterDriverProxy().AppProfileAdd(profile); });
     auto const selected{ *m_DropTargetFullImageNames.begin() };
     RefreshApps(&selected);
     return DROPEFFECT_COPY;

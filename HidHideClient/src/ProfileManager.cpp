@@ -5,17 +5,36 @@
 #include "Logging.h"
 #include "Utils.h"
 #include "Volume.h"
+#include "ConfigurationChannel.h"
 
 #include <TlHelp32.h>
 
 namespace
 {
     constexpr auto RUNTIME_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileRuntime" };
-    constexpr auto VALUE_OVERRIDE_ACTIVE{ L"OverrideActive" };
-    constexpr auto VALUE_BASELINE_ACTIVE{ L"BaselineActive" };
-    constexpr auto VALUE_BASELINE_BLACKLIST{ L"BaselineBlacklist" };
     constexpr auto RUN_KEY{ L"Software\\Microsoft\\Windows\\CurrentVersion\\Run" };
     constexpr auto RUN_VALUE{ L"HidHide App Profiles" };
+    constexpr auto CONTROL_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileControl" };
+
+    void WritePaused(bool paused)
+    {
+        HKEY key{};
+        auto status = ::RegCreateKeyExW(HKEY_CURRENT_USER, CONTROL_KEY, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
+        if (status != ERROR_SUCCESS) THROW_WIN32(status);
+        DWORD value = paused ? 1 : 0;
+        status = ::RegSetValueExW(key, L"Paused", 0, REG_DWORD, reinterpret_cast<BYTE const*>(&value), sizeof(value));
+        ::RegCloseKey(key);
+        if (status != ERROR_SUCCESS) THROW_WIN32(status);
+    }
+
+    bool ReadPaused()
+    {
+        DWORD value{}, size = sizeof(value);
+        auto status = ::RegGetValueW(HKEY_CURRENT_USER, CONTROL_KEY, L"Paused", RRF_RT_REG_DWORD, nullptr, &value, &size);
+        if (status == ERROR_FILE_NOT_FOUND) return false;
+        if (status != ERROR_SUCCESS || value > 1) throw std::runtime_error("Cannot read automatic-profile pause setting");
+        return value != 0;
+    }
 
     std::wstring Normalize(_In_ std::wstring value)
     {
@@ -23,41 +42,6 @@ namespace
         return value;
     }
 
-    void WriteDword(_In_ HKEY key, _In_ PCWSTR name, _In_ DWORD value)
-    {
-        auto const status{ ::RegSetValueExW(key, name, 0, REG_DWORD, reinterpret_cast<BYTE const*>(&value), sizeof(value)) };
-        if (ERROR_SUCCESS != status) THROW_WIN32(status);
-    }
-
-    bool ReadDword(_In_ HKEY key, _In_ PCWSTR name, _Out_ DWORD& value)
-    {
-        DWORD type{};
-        DWORD size{ sizeof(value) };
-        return ERROR_SUCCESS == ::RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE*>(&value), &size)
-            && REG_DWORD == type && sizeof(value) == size;
-    }
-
-    void WriteDevicePaths(_In_ HKEY key, _In_ PCWSTR name, _In_ HidHide::DeviceInstancePaths const& paths)
-    {
-        auto buffer{ HidHide::StringListToMultiString(HidHide::StringSetToStringList(paths)) };
-        if (buffer.size() < 2) buffer.emplace_back(L'\0');
-        auto const status{ ::RegSetValueExW(key, name, 0, REG_MULTI_SZ, reinterpret_cast<BYTE const*>(buffer.data()),
-            static_cast<DWORD>(buffer.size() * sizeof(WCHAR))) };
-        if (ERROR_SUCCESS != status) THROW_WIN32(status);
-    }
-
-    _Success_(return)
-    bool ReadDevicePaths(_In_ HKEY key, _In_ PCWSTR name, _Out_ HidHide::DeviceInstancePaths& paths)
-    {
-        paths.clear();
-        DWORD type{};
-        DWORD size{};
-        if (ERROR_SUCCESS != ::RegQueryValueExW(key, name, nullptr, &type, nullptr, &size) || REG_MULTI_SZ != type) return false;
-        std::vector<WCHAR> buffer((size / sizeof(WCHAR)) + 2, L'\0');
-        if (ERROR_SUCCESS != ::RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE*>(buffer.data()), &size)) return false;
-        paths = HidHide::StringListToStringSet(HidHide::MultiStringToStringList(buffer));
-        return true;
-    }
 }
 
 _Use_decl_annotations_
@@ -71,27 +55,6 @@ CProfileManager::~CProfileManager()
 {
     StopWorker();
     Stop();
-}
-
-void CProfileManager::Recover()
-{
-    HKEY key{};
-    if (ERROR_SUCCESS != ::RegOpenKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, KEY_READ, &key)) return;
-
-    DWORD overrideActive{};
-    DWORD baselineActive{};
-    HidHide::DeviceInstancePaths baselineBlacklist;
-    bool const valid{ ReadDword(key, VALUE_OVERRIDE_ACTIVE, overrideActive)
-        && ReadDword(key, VALUE_BASELINE_ACTIVE, baselineActive)
-        && ReadDevicePaths(key, VALUE_BASELINE_BLACKLIST, baselineBlacklist) };
-    ::RegCloseKey(key);
-
-    if (valid && (0 != overrideActive))
-    {
-        m_FilterDriverProxy.SetBlacklist(baselineBlacklist);
-        m_FilterDriverProxy.SetActive(0 != baselineActive);
-    }
-    ClearRecoveryState();
 }
 
 _Use_decl_annotations_
@@ -126,7 +89,7 @@ CProfileManager::ScanResult CProfileManager::ScanProfiles(std::vector<PreparedPr
         profilesByFileName[profiles[index].normalizedFileName].emplace_back(index);
 
     HANDLE const snapshot{ ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if (INVALID_HANDLE_VALUE == snapshot) return result;
+    if (INVALID_HANDLE_VALUE == snapshot) { result.complete = false; return result; }
 
     PROCESSENTRY32W processEntry{};
     processEntry.dwSize = sizeof(processEntry);
@@ -170,6 +133,7 @@ CProfileManager::ScanResult CProfileManager::ScanProfiles(std::vector<PreparedPr
         } while (::Process32NextW(snapshot, &processEntry));
     }
 
+    if (::GetLastError() != ERROR_NO_MORE_FILES) result.complete = false;
     ::CloseHandle(snapshot);
 
     for (auto const& prepared : profiles)
@@ -208,6 +172,7 @@ void CProfileManager::WorkerMain() noexcept
 
             lock.unlock();
             auto result{ ScanProfiles(preparedProfiles) };
+            result.revision = preparedRevision;
             lock.lock();
             if (m_StopRequested) break;
             if (preparedRevision != m_ProfileRevision) continue;
@@ -217,8 +182,8 @@ void CProfileManager::WorkerMain() noexcept
     }
     catch (...)
     {
-        // A failed scan must not terminate the application. Keep the last known
-        // state; this path is reserved for unexpected failures such as allocation.
+        std::lock_guard<std::mutex> lock(m_WorkerMutex);
+        m_WorkerFailed = true;
     }
 }
 
@@ -232,48 +197,11 @@ void CProfileManager::StopWorker() noexcept
     if (m_Worker.joinable()) m_Worker.join();
 }
 
-void CProfileManager::SaveRecoveryState() const
-{
-    HKEY key{};
-    DWORD disposition{};
-    auto const status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE, nullptr, &key, &disposition) };
-    if (ERROR_SUCCESS != status) THROW_WIN32(status);
-
-    try
-    {
-        WriteDevicePaths(key, VALUE_BASELINE_BLACKLIST, m_BaselineBlacklist);
-        WriteDword(key, VALUE_BASELINE_ACTIVE, m_BaselineActive ? 1 : 0);
-        // Write the marker last so an incomplete record is never treated as recoverable.
-        WriteDword(key, VALUE_OVERRIDE_ACTIVE, 1);
-    }
-    catch (...)
-    {
-        ::RegCloseKey(key);
-        throw;
-    }
-    ::RegCloseKey(key);
-}
-
-void CProfileManager::ClearRecoveryState() const noexcept
-{
-    ::RegDeleteTreeW(HKEY_CURRENT_USER, RUNTIME_KEY);
-}
-
-void CProfileManager::RestoreBaseline()
-{
-    m_FilterDriverProxy.SetBlacklist(m_BaselineBlacklist);
-    m_FilterDriverProxy.SetActive(m_BaselineActive);
-    m_LastProfileDevices.clear();
-    m_LastAppliedBlacklist.clear();
-    m_ActiveProfiles.clear();
-    m_ActiveProfileCount = 0;
-    m_OverrideActive = false;
-    ClearRecoveryState();
-}
-
 void CProfileManager::Tick()
 {
+    Observe();
+    if (m_Conflict) return;
+    m_FilterDriverProxy.Refresh();
     auto const profiles{ m_FilterDriverProxy.GetAppProfiles() };
     if (!m_HasSubmittedProfiles || (profiles != m_SubmittedProfiles))
     {
@@ -289,61 +217,17 @@ void CProfileManager::Tick()
     }
 
     ScanResult result;
+    std::uint64_t sequence{};
     {
         std::lock_guard<std::mutex> lock(m_WorkerMutex);
+        if (m_WorkerFailed) { m_Status = L"Process monitoring stopped after a worker failure; restart the manager"; return; }
         if (m_AppliedSequence == m_CompletedSequence) return;
         result = m_CompletedResult;
-        m_AppliedSequence = m_CompletedSequence;
+        sequence = m_CompletedSequence;
+        if (result.revision != m_ProfileRevision) return;
     }
     ApplyScanResult(result);
-}
-
-_Use_decl_annotations_
-void CProfileManager::ApplyScanResult(ScanResult const& result)
-{
-    auto const& activeDevices{ result.activeDevices };
-    m_ActiveProfiles = result.activeProfiles;
-    m_ActiveProfileCount = m_ActiveProfiles.size();
-
-    if (m_OverrideActive)
-    {
-        // Changes made in the Devices tab while profiles are active become part of
-        // the baseline, excluding devices supplied by the previous profile union.
-        auto const currentBlacklist{ m_FilterDriverProxy.GetBlacklist() };
-        if (currentBlacklist != m_LastAppliedBlacklist)
-        {
-            m_BaselineBlacklist = currentBlacklist;
-            for (auto const& device : m_LastProfileDevices) m_BaselineBlacklist.erase(device);
-            SaveRecoveryState();
-        }
-        if (!m_FilterDriverProxy.GetActive())
-        {
-            m_BaselineActive = false;
-            SaveRecoveryState();
-        }
-    }
-
-    if (activeDevices.empty())
-    {
-        if (m_OverrideActive) RestoreBaseline();
-        return;
-    }
-
-    if (!m_OverrideActive)
-    {
-        m_BaselineBlacklist = m_FilterDriverProxy.GetBlacklist();
-        m_BaselineActive = m_FilterDriverProxy.GetActive();
-        m_OverrideActive = true;
-        SaveRecoveryState();
-    }
-
-    HidHide::DeviceInstancePaths effective{ m_BaselineBlacklist };
-    effective.insert(activeDevices.begin(), activeDevices.end());
-    if (effective != m_FilterDriverProxy.GetBlacklist()) m_FilterDriverProxy.SetBlacklist(effective);
-    if (!m_FilterDriverProxy.GetActive()) m_FilterDriverProxy.SetActive(true);
-
-    m_LastProfileDevices = activeDevices;
-    m_LastAppliedBlacklist = std::move(effective);
+    m_AppliedSequence = sequence;
 }
 
 _Use_decl_annotations_
@@ -402,7 +286,7 @@ void CProfileManager::ConfigureAutoStart(bool enabled) const
 
 void CProfileManager::Stop() noexcept
 {
-    if (!m_OverrideActive) return;
+    if (m_Conflict || (!m_OverrideActive && !m_JournalPending)) return;
     try
     {
         RestoreBaseline();
@@ -411,4 +295,171 @@ void CProfileManager::Stop() noexcept
     {
         // Leave the recovery marker intact so the next launch can restore safely.
     }
+}
+
+void CProfileManager::ExitSafely()
+{
+    if (m_Conflict) throw std::runtime_error("Resolve the ownership conflict before exiting and restoring settings");
+    if (m_OverrideActive || m_JournalPending) RestoreBaseline();
+}
+
+void CProfileManager::Observe()
+{
+    auto current = HidHide::FilterDriverProxy::ReadDriverConfiguration();
+    if (current != m_Expected)
+    {
+        if (m_OverrideActive || m_JournalPending)
+        {
+            m_Conflict = true;
+            m_Status = L"Conflict: external settings changed. Use the tray menu to accept current settings";
+        }
+        else if (!m_Conflict) { m_Baseline = current; m_Expected = std::move(current); }
+    }
+}
+
+HidHide::Configuration CProfileManager::ReadUserConfiguration()
+{
+    Observe();
+    return m_Baseline;
+}
+
+void CProfileManager::CommitUserConfiguration(HidHide::Configuration const& expected, HidHide::Configuration const& desired, bool disable)
+{
+    Observe();
+    if (m_Conflict) throw std::runtime_error("Profile ownership conflict. Accept current driver settings from the manager tray menu before editing");
+    if (expected != m_Baseline) throw std::runtime_error("Settings changed since this command started. Refresh and retry");
+    // An explicit off command suspends automatic overrides, including when the
+    // saved baseline was already off and a running profile temporarily enabled it.
+    bool const suspend = m_Suspended || disable;
+    if (disable) { WritePaused(true); m_Suspended = true; }
+    Transition(desired, m_LastProfileDevices, suspend);
+}
+
+void CProfileManager::Transition(HidHide::Configuration const& baseline, HidHide::DeviceInstancePaths const& devices, bool suspended)
+{
+    Observe();
+    if (m_Conflict) throw std::runtime_error("Profile reconciliation is suspended because driver settings changed externally");
+    auto desired = HidHide::EffectiveConfiguration(baseline, devices, suspended);
+    bool const overrideActive = !suspended && !devices.empty();
+    if ((overrideActive || m_JournalPending) && (desired != m_Expected || baseline != m_Baseline || !m_JournalPending))
+        SaveRecoveryState(baseline, m_Expected, desired);
+    HidHide::FilterDriverProxy::CommitDriverConfiguration(m_Expected, desired);
+    // Advance ownership only after read-back confirmation.
+    m_Baseline = baseline; m_Expected = std::move(desired);
+    m_LastProfileDevices = devices; m_Suspended = suspended; m_OverrideActive = overrideActive;
+    if (!overrideActive && m_JournalPending) ClearRecoveryState();
+    m_Status = suspended ? L"Paused: baseline settings applied" : overrideActive ? L"Profiles applied globally" : L"Monitoring: baseline settings applied";
+}
+
+_Use_decl_annotations_
+void CProfileManager::ApplyScanResult(ScanResult const& result)
+{
+    if (!result.complete) { m_Status = L"Process scan failed; preserving current settings"; return; }
+    Transition(m_Baseline, result.activeDevices, m_Suspended);
+    m_ActiveProfiles = result.activeProfiles;
+    m_ActiveProfileCount = m_ActiveProfiles.size();
+}
+
+void CProfileManager::RestoreBaseline()
+{
+    Transition(m_Baseline, {}, true);
+    m_ActiveProfiles.clear(); m_ActiveProfileCount = 0;
+}
+
+void CProfileManager::AdoptExternalState()
+{
+    // Explicit conflict resolution: preserve the actual driver state, discard the
+    // obsolete restoration claim, and require a separate resume action.
+    auto current = HidHide::FilterDriverProxy::ReadDriverConfiguration();
+    WritePaused(true);
+    ClearRecoveryState();
+    m_Baseline = current; m_Expected = std::move(current);
+    m_Conflict = false; m_Suspended = true; m_OverrideActive = false;
+    m_LastProfileDevices.clear(); m_ActiveProfiles.clear(); m_ActiveProfileCount = 0;
+    m_Status = L"Paused: current driver settings accepted as baseline";
+    m_FilterDriverProxy.Refresh();
+}
+
+void CProfileManager::Resume()
+{
+    Observe();
+    if (m_Conflict) throw std::runtime_error("Resolve the ownership conflict before resuming profiles");
+    WritePaused(false);
+    m_Suspended = false;
+    m_Status = L"Monitoring: waiting for a fresh process scan";
+    // Wake the worker; no stale process observation is used to resume.
+    { std::lock_guard<std::mutex> lock(m_WorkerMutex); ++m_ProfileRevision; }
+    m_WorkerWake.notify_one();
+}
+
+void CProfileManager::Pause()
+{
+    Observe();
+    if (m_Conflict) throw std::runtime_error("Resolve the ownership conflict before restoring the baseline");
+    WritePaused(true); m_Suspended = true;
+    RestoreBaseline();
+}
+
+void CProfileManager::SaveRecoveryState(HidHide::Configuration const& baseline,
+    HidHide::Configuration const& before, HidHide::Configuration const& after)
+{
+    HidHide::Protocol::Writer record;
+    record.Number(HidHide::Protocol::Version); record.String(HidHide::Channel::CurrentSid());
+    record.State(baseline); record.State(before); record.State(after);
+    HKEY key{};
+    auto error = ::RegCreateKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
+    if (error != ERROR_SUCCESS) THROW_WIN32(error);
+    error = ::RegSetValueExW(key, L"TransactionV1", 0, REG_BINARY, record.data.data(), static_cast<DWORD>(record.data.size()));
+    if (error == ERROR_SUCCESS) error = ::RegFlushKey(key);
+    ::RegCloseKey(key);
+    if (error != ERROR_SUCCESS) THROW_WIN32(error);
+    m_JournalPending = true;
+}
+
+void CProfileManager::ClearRecoveryState()
+{
+    auto const error = ::RegDeleteTreeW(HKEY_CURRENT_USER, RUNTIME_KEY);
+    if (error != ERROR_SUCCESS && error != ERROR_FILE_NOT_FOUND) THROW_WIN32(error);
+    m_JournalPending = false;
+}
+
+void CProfileManager::Recover()
+{
+    m_Baseline = HidHide::FilterDriverProxy::ReadDriverConfiguration();
+    m_Suspended = ReadPaused();
+    m_Expected = m_Baseline;
+    HKEY key{};
+    auto const opened = ::RegOpenKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, KEY_QUERY_VALUE, &key);
+    if (opened != ERROR_FILE_NOT_FOUND)
+    {
+        m_JournalPending = true;
+        try
+        {
+            if (opened != ERROR_SUCCESS) throw std::runtime_error("Cannot read recovery journal");
+            DWORD type{}, size{};
+            if (::RegQueryValueExW(key, L"TransactionV1", nullptr, &type, nullptr, &size) != ERROR_SUCCESS
+                || type != REG_BINARY || size > HidHide::Protocol::MaxBytes) throw std::runtime_error("Legacy or malformed recovery record");
+            std::vector<std::uint8_t> bytes(size);
+            if (::RegQueryValueExW(key, L"TransactionV1", nullptr, &type, bytes.data(), &size) != ERROR_SUCCESS || type != REG_BINARY)
+                throw std::runtime_error("Incomplete recovery record");
+            bytes.resize(size);
+            HidHide::Protocol::Reader reader(bytes);
+            if (reader.Number() != HidHide::Protocol::Version || reader.String() != HidHide::Channel::CurrentSid())
+                throw std::runtime_error("Recovery record owner or version mismatch");
+            auto baseline = reader.State(); auto before = reader.State(); auto after = reader.State(); reader.End();
+            if (m_Expected != before && m_Expected != after && m_Expected != baseline) throw std::runtime_error("Recovery state differs from actual driver settings");
+            HidHide::FilterDriverProxy::CommitDriverConfiguration(m_Expected, baseline);
+            m_Baseline = baseline; m_Expected = std::move(baseline);
+            ::RegCloseKey(key); key = nullptr;
+            ClearRecoveryState();
+        }
+        catch (...)
+        {
+            m_Conflict = true;
+            m_Status = L"Recovery conflict: record retained. Accept current settings from the tray menu to continue";
+        }
+        if (key) ::RegCloseKey(key);
+    }
+    m_FilterDriverProxy.SetCoordinator([this] { return ReadUserConfiguration(); },
+        [this](auto const& expected, auto const& desired, bool disable) { CommitUserConfiguration(expected, desired, disable); });
 }

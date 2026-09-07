@@ -13,6 +13,8 @@ class CBlacklistDlg : public CDialogEx, public HidHide::IDropTarget
     DECLARE_DYNAMIC(CBlacklistDlg)
 
 public:
+    void RefreshEnabledState();
+    void RefreshConfiguration() { OnUserMessageRefresh(0, 0); }
 
     CBlacklistDlg() noexcept = delete;
     CBlacklistDlg(_In_ CBlacklistDlg const& rhs) = delete;

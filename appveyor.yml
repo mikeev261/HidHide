@@ -2,57 +2,36 @@ version: 1.7.{build}.0
 build_cloud: WIN-LKR467JS4GL
 image: Windows
 configuration: Release
-branches:
-  only:
-    - master
-    - /v\d+\.\d+\.\d+/
-skip_commits:
-  files:
-    - '**/*.md'
+# All branches and pull requests validate the companion.
 test: off
 platform:
-- x64 # ARM64 is built in the same job
+- x64
 install:
 - cmd: git submodule update --init --recursive
-- ps: Setup-VS2022
 - ps: |
+    $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+    $env:HIDHIDE_MSBUILD = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild/**/Bin/MSBuild.exe | Select-Object -First 1
+    if (!$env:HIDHIDE_MSBUILD) { throw 'MSBuild not found; install Visual Studio with v145 x64/ARM64 tools and MFC.' }
     dotnet tool install --global wix --version 5.0.2
-    $dotnetTools = Join-Path $env:USERPROFILE '.dotnet/tools'
-    $env:PATH = "$dotnetTools;$env:PATH"
+    if ($LASTEXITCODE) { throw 'WiX installation failed' }
+    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
     wix extension add -g WixToolset.UI.wixext/5.0.2
-build:
-  parallel: true
-  verbosity: minimal
+    if ($LASTEXITCODE) { throw 'WiX extension installation failed' }
 build_script:
-# MSI staging driver test-sign: optional HIDHIDE_TEST_SIGN_PFX + HIDHIDE_TEST_SIGN_PFX_PASSWORD (encrypted). If unset, CI generates a throwaway code-signing PFX via PowerShell.
 - ps: |
-    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
-    $args = @('Ci', '--configuration', 'Release', '--platform', 'x64')
-    if ($env:HIDHIDE_TEST_SIGN_PFX) {
-      $args += '--hid-hide-test-sign-pfx'; $args += $env:HIDHIDE_TEST_SIGN_PFX
-      if ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { $args += '--hid-hide-test-sign-pfx-password'; $args += $env:HIDHIDE_TEST_SIGN_PFX_PASSWORD }
+    foreach ($arch in @('x64', 'ARM64')) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 Ci --configuration Release --platform $arch --compiler-path $env:HIDHIDE_MSBUILD
+      if ($LASTEXITCODE) { throw "Companion CI failed for $arch (exit $LASTEXITCODE)" }
     }
-    elseif ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { throw 'HIDHIDE_TEST_SIGN_PFX_PASSWORD is set but HIDHIDE_TEST_SIGN_PFX is not.' }
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" @args
+on_finish:
 - ps: |
-    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
-    $args = @('Ci', '--configuration', 'Release', '--platform', 'ARM64')
-    if ($env:HIDHIDE_TEST_SIGN_PFX) {
-      $args += '--hid-hide-test-sign-pfx'; $args += $env:HIDHIDE_TEST_SIGN_PFX
-      if ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { $args += '--hid-hide-test-sign-pfx-password'; $args += $env:HIDHIDE_TEST_SIGN_PFX_PASSWORD }
+    Get-ChildItem artifacts/tests -Filter results.xml -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+      (New-Object Net.WebClient).UploadFile("https://ci.appveyor.com/api/testresults/junit/$env:APPVEYOR_JOB_ID", $_.FullName)
     }
-    elseif ($env:HIDHIDE_TEST_SIGN_PFX_PASSWORD) { throw 'HIDHIDE_TEST_SIGN_PFX_PASSWORD is set but HIDHIDE_TEST_SIGN_PFX is not.' }
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" @args
-after_build:
-# Cab generation moved into NUKE target `BuildCab` (part of `Ci`)
 artifacts:
-  # Forward slashes: AppVeyor resolves these reliably from repo root.
 - path: artifacts/msi/**/*.msi
-- path: disk1/*.cab
+- path: artifacts/logs/**/*.binlog
+- path: artifacts/tests/**/*.xml
 - path: bin/**/*.pdb
 - path: bin/**/HidHide*.exe
-deploy:
-- provider: Environment
-  name: BUILDBOT
-  on:
-    appveyor_repo_tag: true
+# Publication is intentionally separate from validation.

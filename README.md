@@ -95,14 +95,29 @@ These are residual entries in the caches of the operating system, and can be cle
 The *App Profiles* tab applies a different hidden-device set while each configured executable is running. Add an executable
 with *+* (or drag it onto the tab) and select the physical devices to hide. Closing the window leaves the profile manager
 running in the notification area; use its tray menu to reopen it or exit and restore the normal Devices-tab configuration.
-The manager starts automatically at sign-in whenever profiles are configured. If multiple profiled applications run at the
+After the manager has run with profiles configured, it starts automatically at sign-in. If profiles were created with the
+CLI while the manager was absent, open the manager once to register autostart. If multiple profiled applications run at the
 same time, their selected devices are combined. This user-mode design reuses the separately installed Microsoft-signed
 HidHide driver and remains compatible with Secure Boot.
 
 The signed driver exposes a single global hidden-device list, so an active profile temporarily affects every non-whitelisted
 application, not only the executable that activated it. The manager preserves the normal device list, adds active-profile
 devices to it, restores it when the last profile exits, and records recovery data before each override. An application on
-the *Applications* whitelist retains access to every hidden device.
+the *Applications* whitelist retains access to every hidden device unless inverse-whitelist mode is enabled.
+
+The Devices tab and CLI edit your normal baseline selections, even while a profile is active. The hiding checkbox shows
+the effective driver state. Turning hiding off suspends automatic profiles until you choose *Resume automatic profiles*
+from the tray menu; this pause survives a restart. *Pause automatic profiles and restore baseline* restores your normal
+settings without changing your saved enabled preference.
+
+The CLI works while the manager is resident. Only one companion coordinator can run across Windows sessions. Another
+configuration utility can access the driver between transactions; if it changes settings during an override, the manager
+reports a conflict and stops applying profiles. *Resolve conflict: accept current driver settings* preserves those actual
+settings as your new baseline and leaves profiles paused. The old restoration claim is discarded only by that explicit
+action. Failed or uncertain restoration retains recovery data; an exit requesting restoration reports the failure.
+
+Automatic detection is best effort. It does not guarantee that hiding is applied before a game opens a device, or that
+already-open handles lose access. Read-only CLI queries do not automatically whitelist the CLI executable.
 
 Physical devices are the primary rows in the profile tree. Expand one only when interface-level control is needed. The
 *Gaming devices only* filter is enabled by default, disconnected devices are hidden by default, and selections excluded by

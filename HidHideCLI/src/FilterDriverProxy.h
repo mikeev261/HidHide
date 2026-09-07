@@ -2,16 +2,11 @@
 // SPDX-License-Identifier: MIT
 // FilterDriverProxy.h
 #pragma once
+#include "Configuration.h"
+#include <functional>
 
 namespace HidHide
 {
-    typedef std::wstring DeviceInstancePath;
-    typedef std::set<DeviceInstancePath> DeviceInstancePaths;
-    typedef std::filesystem::path FullImageName;
-    typedef std::set<FullImageName> FullImageNames;
-
-    typedef std::map<FullImageName, DeviceInstancePaths> AppProfiles;
-
     class FilterDriverProxy
     {
     public:
@@ -22,9 +17,17 @@ namespace HidHide
         FilterDriverProxy& operator=(_In_ FilterDriverProxy const& rhs) = delete;
         FilterDriverProxy& operator=(_In_ FilterDriverProxy&& rhs) = delete;
 
-        // Exclusively lock the device driver, fill the cache layer, and ensure the module file name is always on the whitelist
-        explicit FilterDriverProxy(_In_ bool writeThrough);
+        // Snapshot configuration. Driver handles exist only inside transactions.
+        explicit FilterDriverProxy(_In_ bool writeThrough, bool coordinator = false);
         ~FilterDriverProxy() = default;
+
+        void Refresh();
+        Configuration const& CachedConfiguration() const { return m_Cache; }
+        void SetCoordinator(std::function<Configuration()> read,
+            std::function<void(Configuration const&, Configuration const&, bool)> commit);
+        std::vector<std::uint8_t> HandleRequest(std::vector<std::uint8_t> const& request);
+        static Configuration ReadDriverConfiguration();
+        static void CommitDriverConfiguration(Configuration const& expected, Configuration const& desired);
 
         // Get the control device state
         // Returns ERROR_SUCCESS when available for use
@@ -92,14 +95,15 @@ namespace HidHide
 
     private:
 
-        typedef std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)> CloseHandlePtr;
-
-        bool const           m_WriteThrough; // Flag indicating that changes should be applied instantly
-        CloseHandlePtr const m_Device;       // The handle to the filter driver
-        bool                 m_Active;       // Indicates if the filter driver is hiding devices or not
-        DeviceInstancePaths  m_Blacklist;    // The device instance paths of the blacklisted HID devices
-        FullImageNames       m_Whitelist;    // The full image names of the whitelisted applications
-        AppProfiles          m_AppProfiles;  // The application profiles mapping full image name to device instance paths
-        bool                 m_Inverse;      // Indicates if the inverse whitelist is enabled
+        Configuration Read();
+        void Commit(Configuration const& desired);
+        void Change(Configuration const& desired);
+        bool const m_WriteThrough;
+        bool const m_Coordinator;
+        Configuration m_Cache;
+        Configuration m_Original;
+        bool m_DisableRequested{};
+        std::function<Configuration()> m_Read;
+        std::function<void(Configuration const&, Configuration const&, bool)> m_Commit;
     };
 }

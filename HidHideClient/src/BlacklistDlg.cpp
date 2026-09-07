@@ -122,7 +122,7 @@ BOOL CBlacklistDlg::OnInitDialog()
     // Reflect the current Active state in the check-box
     m_Filter.SetCheck(BST_CHECKED);
     m_Gaming.SetCheck(BST_CHECKED);
-    m_Enable.SetCheck(FilterDriverProxy().GetActive() ? BST_CHECKED : BST_UNCHECKED);
+    RefreshEnabledState();
 
     // Prepare list icons
     if (nullptr == (m_LockBlank = ::LoadIconW(AfxGetApp()->m_hInstance, MAKEINTRESOURCEW(IDI_ICON_BLACKLIST_LOCK_BLANK)))) THROW_WIN32_LAST_ERROR;
@@ -158,6 +158,7 @@ void CBlacklistDlg::Refresh()
 _Use_decl_annotations_
 LRESULT CBlacklistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
 {
+    RefreshEnabledState();
     TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
@@ -298,27 +299,30 @@ void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResul
     }
 
     // Construct the new black-list using the same physical-device expansion shared by App Profiles.
-    HidHide::DeviceInstancePaths deviceInstancePaths;
+    auto deviceInstancePaths = FilterDriverProxy().GetBlacklist();
     for (auto hItem{ m_Blacklist.GetRootItem() }; (nullptr != hItem); hItem = m_Blacklist.GetNextItem(hItem, TVGN_NEXT))
     {
         std::vector<HidHide::HidDeviceInformation> devices;
+        HidHide::DeviceInstancePaths displayedHidPaths;
         HidHide::DeviceInstancePaths selectedHidPaths;
         for (auto hChild{ m_Blacklist.GetChildItem(hItem) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild))
         {
             auto const childItemData{ reinterpret_cast<HidHide::HidDeviceInformation*>(m_Blacklist.GetItemData(hChild)) };
             if (nullptr == childItemData) THROW_WIN32(ERROR_INVALID_PARAMETER);
             devices.emplace_back(*childItemData);
+            displayedHidPaths.emplace(childItemData->deviceInstancePath);
 
             if (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hChild, TVIS_USERMASK)))
                 selectedHidPaths.emplace(childItemData->deviceInstancePath);
         }
 
+        for (auto const& path : HidHide::HidDevicePathsForSelection(devices, displayedHidPaths)) deviceInstancePaths.erase(path);
         auto const expanded{ HidHide::HidDevicePathsForSelection(devices, selectedHidPaths) };
         deviceInstancePaths.insert(expanded.begin(), expanded.end());
     }
 
     // Forward the new selection to the filter driver
-    FilterDriverProxy().SetBlacklist(deviceInstancePaths);
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetBlacklist(deviceInstancePaths); });
     *pResult = 0;
 }
 
@@ -337,5 +341,10 @@ void CBlacklistDlg::OnBnClickedCheckGaming()
 void CBlacklistDlg::OnBnClickedCheckEnable()
 {
     TRACE_ALWAYS(L"");
-    FilterDriverProxy().SetActive(0 != (m_Enable.GetCheck() & BST_CHECKED));
+    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetActive(0 != (m_Enable.GetCheck() & BST_CHECKED)); });
+}
+
+void CBlacklistDlg::RefreshEnabledState()
+{
+    m_Enable.SetCheck(m_HidHideClientDlg.EffectiveHidingEnabled() ? BST_CHECKED : BST_UNCHECKED);
 }

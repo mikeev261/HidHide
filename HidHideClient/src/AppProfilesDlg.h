@@ -15,6 +15,7 @@ class CAppProfilesDlg : public CDialogEx, public HidHide::IDropTarget
     DECLARE_DYNAMIC(CAppProfilesDlg)
 
 public:
+    void RefreshConfiguration() { auto selected = SelectedProfile(); RefreshApps(selected ? &*selected : nullptr); RefreshDevices(); }
     CAppProfilesDlg(_In_ CHidHideClientDlg& hidHideClientDlg, _In_opt_ CWnd* pParent);
     virtual ~CAppProfilesDlg();
 

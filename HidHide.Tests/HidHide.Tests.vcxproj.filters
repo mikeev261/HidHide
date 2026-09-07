@@ -15,6 +15,9 @@
     <ClCompile Include="configuration_session_tests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="device_selection_tests.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="cli_parsing_tests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

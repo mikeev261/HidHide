@@ -8,16 +8,6 @@
 #include "Volume.h"
 #include "ConfigurationUi.h"
 
-namespace
-{
-    std::wstring InterfaceSuffix(std::wstring const& deviceInstancePath)
-    {
-        auto const separator{ deviceInstancePath.find_last_of(L'\\') };
-        if ((std::wstring::npos == separator) || (separator + 1 >= deviceInstancePath.size())) return {};
-        return deviceInstancePath.substr(separator + 1);
-    }
-}
-
 IMPLEMENT_DYNAMIC(CAppProfilesDlg, CDialogEx)
 
 BEGIN_MESSAGE_MAP(CAppProfilesDlg, CDialogEx)
@@ -105,6 +95,7 @@ std::filesystem::path CAppProfilesDlg::DisplayPath(HidHide::FullImageName const&
 _Use_decl_annotations_
 void CAppProfilesDlg::RefreshApps(HidHide::FullImageName const* selectProfile)
 {
+    if (m_SavePending) UpdateProfileFromTree();
     // Keep retrying an incomplete view refresh even when the profile map is unchanged.
     // In particular, a changed list selection must not leave the previous tree displayed.
     m_RefreshPending = true;
@@ -153,48 +144,13 @@ std::optional<HidHide::FullImageName> CAppProfilesDlg::SelectedProfile() const
     return m_AppPaths[static_cast<size_t>(selected)];
 }
 
-_Use_decl_annotations_
-std::wstring CAppProfilesDlg::ParentLabel(std::wstring const& friendlyName, std::vector<HidHide::HidDeviceInformation> const& devices, bool duplicateFriendlyName) const
-{
-    auto const name{ friendlyName.empty() ? std::wstring(L"HID device") : friendlyName };
-    if (!duplicateFriendlyName || devices.empty()) return name;
-
-    for (auto const& device : devices)
-    {
-        if (!device.serialNumber.empty()) return name + L" — " + device.serialNumber;
-    }
-
-    auto const suffix{ InterfaceSuffix(devices.front().baseContainerDeviceInstancePath.empty()
-        ? devices.front().deviceInstancePath
-        : devices.front().baseContainerDeviceInstancePath) };
-    return suffix.empty() ? name : name + L" — " + suffix;
-}
-
-_Use_decl_annotations_
-std::wstring CAppProfilesDlg::ChildLabel(HidHide::HidDeviceInformation const& device, bool duplicateUsage) const
-{
-    std::wstring label{ device.usage.empty() ? device.description : device.usage };
-    if (label.empty()) label = L"HID interface";
-
-    if (duplicateUsage)
-    {
-        auto const suffix{ InterfaceSuffix(device.deviceInstancePath) };
-        if (!suffix.empty()) label += L" — " + suffix;
-    }
-
-    if (!device.present) label += L" (disconnected)";
-    return label;
-}
-
 void CAppProfilesDlg::RefreshDevices(HidHide::AppProfiles const& profiles)
 {
-    auto deviceItemData = HidHide::HidDevices(0 != (m_GamingOnly.GetCheck() & BST_CHECKED));
+    auto deviceItemData = HidHide::HidDevices(false);
     m_Refreshing = true;
     m_DevicesTree.DeleteAllItems();
     m_DisplayedProfiles = profiles;
     m_SavePending = false;
-    m_ParentItems.clear();
-    m_ChildItems.clear();
 
     auto const selectedProfile{ SelectedProfile() };
     m_DisplayedProfile = selectedProfile;
@@ -212,37 +168,9 @@ void CAppProfilesDlg::RefreshDevices(HidHide::AppProfiles const& profiles)
     auto const profileIterator{ profiles.find(*selectedProfile) };
     HidHide::DeviceInstancePaths const selectedPaths{ profileIterator == profiles.end() ? HidHide::DeviceInstancePaths{} : profileIterator->second };
 
-    bool const showDisconnected{ 0 != (m_ShowDisconnected.GetCheck() & BST_CHECKED) };
-    m_DeviceItemData = std::move(deviceItemData);
-
-    std::map<std::wstring, size_t> friendlyNameCounts;
-    for (auto const& container : m_DeviceItemData) friendlyNameCounts[container.first]++;
-
-    for (auto const& container : m_DeviceItemData)
-    {
-        if ((!showDisconnected) && std::none_of(container.second.begin(), container.second.end(), [](auto const& device) { return device.present; })) continue;
-
-        auto const parentText{ ParentLabel(container.first, container.second, friendlyNameCounts[container.first] > 1) };
-        HTREEITEM const parent{ m_DevicesTree.InsertItem(parentText.c_str()) };
-        m_ParentItems[parent] = &container.second;
-
-        std::map<std::wstring, size_t> usageCounts;
-        for (auto const& device : container.second) usageCounts[device.usage]++;
-
-        bool allChecked{ !container.second.empty() };
-        for (auto const& device : container.second)
-        {
-            auto const label{ ChildLabel(device, usageCounts[device.usage] > 1) };
-            HTREEITEM const child{ m_DevicesTree.InsertItem(label.c_str(), parent) };
-            m_ChildItems[child] = &device;
-
-            bool const checked{ selectedPaths.end() != selectedPaths.find(device.deviceInstancePath) };
-            m_DevicesTree.SetCheck(child, checked ? TRUE : FALSE);
-            allChecked = allChecked && checked;
-        }
-
-        m_DevicesTree.SetCheck(parent, allChecked ? TRUE : FALSE);
-    }
+    m_Selector.Build(m_DevicesTree, deviceItemData, selectedPaths,
+        { 0 != (m_GamingOnly.GetCheck() & BST_CHECKED), 0 == (m_ShowDisconnected.GetCheck() & BST_CHECKED), false },
+        DeviceSelectionTree::Presentation::ProfileCheckboxes);
 
     m_Refreshing = false;
     UpdateStatus();
@@ -258,25 +186,11 @@ void CAppProfilesDlg::UpdateProfileFromTree()
     auto profileEntry = profiles.find(*selectedProfile);
     if (profileEntry == profiles.end()) throw HidHide::ConfigurationConflict("Profile deleted");
     auto& profilePaths{ profileEntry->second };
-    for (auto const& [parent, devices] : m_ParentItems)
-    {
-        HidHide::DeviceInstancePaths allHidPaths;
-        HidHide::DeviceInstancePaths selectedHidPaths;
-        for (HTREEITEM child = m_DevicesTree.GetChildItem(parent); nullptr != child; child = m_DevicesTree.GetNextSiblingItem(child))
-        {
-            auto const found{ m_ChildItems.find(child) };
-            if (found == m_ChildItems.end()) continue;
-            allHidPaths.emplace(found->second->deviceInstancePath);
-            if (m_DevicesTree.GetCheck(child)) selectedHidPaths.emplace(found->second->deviceInstancePath);
-        }
-
-        auto const displayedPaths{ HidHide::HidDevicePathsForSelection(*devices, allHidPaths) };
-        auto const expanded{ HidHide::HidDevicePathsForSelection(*devices, selectedHidPaths) };
-        profilePaths = HidHide::ReplaceDisplayedDevicePaths(std::move(profilePaths), displayedPaths, expanded);
-    }
+    profilePaths = m_Selector.Selection(m_DevicesTree, std::move(profilePaths));
 
     FilterDriverProxy().SetAppProfiles(m_DisplayedProfiles, profiles);
     m_DisplayedProfiles = std::move(profiles);
+    m_Selector.Acknowledge();
     m_SavePending = false;
     UpdateStatus();
 }
@@ -291,8 +205,7 @@ void CAppProfilesDlg::UpdateStatus()
     size_t selectedInterfaces{};
     if (found != profiles.end())
     {
-        for (auto const& device : m_ChildItems)
-            if (found->second.end() != found->second.find(device.second->deviceInstancePath)) selectedInterfaces++;
+        selectedInterfaces = m_Selector.SelectedInterfaces(found->second);
     }
 
     bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
@@ -332,29 +245,10 @@ try
     auto const& itemChange{ *reinterpret_cast<NMTVITEMCHANGE*>(pNMHDR) };
     if ((itemChange.uStateOld & TVIS_STATEIMAGEMASK) == (itemChange.uStateNew & TVIS_STATEIMAGEMASK)) return;
 
-    auto const parentIterator{ m_ParentItems.find(itemChange.hItem) };
-    if (parentIterator != m_ParentItems.end())
-    {
-        bool const checked{ FALSE != m_DevicesTree.GetCheck(itemChange.hItem) };
-        m_Refreshing = true;
-        for (HTREEITEM child = m_DevicesTree.GetChildItem(itemChange.hItem); nullptr != child; child = m_DevicesTree.GetNextSiblingItem(child))
-            m_DevicesTree.SetCheck(child, checked ? TRUE : FALSE);
-        m_Refreshing = false;
-    }
-    else
-    {
-        auto const childIterator{ m_ChildItems.find(itemChange.hItem) };
-        if (childIterator == m_ChildItems.end()) return;
-
-        HTREEITEM const parent{ m_DevicesTree.GetParentItem(itemChange.hItem) };
-        bool allChecked{ true };
-        for (HTREEITEM child = m_DevicesTree.GetChildItem(parent); nullptr != child; child = m_DevicesTree.GetNextSiblingItem(child))
-            allChecked = allChecked && (FALSE != m_DevicesTree.GetCheck(child));
-
-        m_Refreshing = true;
-        m_DevicesTree.SetCheck(parent, allChecked ? TRUE : FALSE);
-        m_Refreshing = false;
-    }
+    m_Refreshing = true;
+    bool const changed = m_Selector.Change(m_DevicesTree, itemChange.hItem);
+    m_Refreshing = false;
+    if (!changed) return;
 
     m_SavePending = true;
     UpdateProfileFromTree();
@@ -457,12 +351,12 @@ void CAppProfilesDlg::OnTimer(UINT_PTR nIDEvent)
     {
         try
         {
+            if (m_SavePending) UpdateProfileFromTree();
             if (m_RefreshPending || (!m_SavePending && FilterDriverProxy().GetAppProfiles() != m_DisplayedProfiles))
             {
                 RefreshApps();
             }
-            if (m_SavePending) UpdateProfileFromTree();
-            else UpdateStatus();
+            UpdateStatus();
         }
         catch (HidHide::ConfigurationConflict const& error)
         {

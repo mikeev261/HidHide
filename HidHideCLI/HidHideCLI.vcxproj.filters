@@ -71,6 +71,9 @@
     <ClInclude Include="src\Volume.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\DeviceSelection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\HID.h">
       <Filter>Header Files</Filter>
     </ClInclude>

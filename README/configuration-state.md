@@ -1,5 +1,13 @@
 # Configuration state and ownership (issue #7)
 
+> Historical implementation notes for the pre-coordinator design. The current
+> transaction, storage, recovery, and explicit pause behavior is documented in
+> [Configuration ownership](../CONFIGURATION_OWNERSHIP.md). In particular,
+> conflicts now retain the journal and require explicit tray-menu resolution;
+> restarting alone does not accept conflicting state. Active profiles can
+> temporarily enable hiding until explicitly paused or disabled. The displayed
+> UI snapshots, selection rollback, and device-refresh fixes below are retained.
+
 ## Investigation and plan
 
 The old proxy retained construction-time driver/profile values and changed them before attempting writes. Its lifetime also retained the control handle even though the existing signed driver declares the control device exclusive. Sharing flags alone cannot enable another CLI instance to open that device.

@@ -12,6 +12,7 @@ class CWhitelistDlg : public CDialogEx, public HidHide::IDropTarget
     DECLARE_DYNAMIC(CWhitelistDlg)
 
 public:
+    void RefreshConfiguration() { Refresh(); }
 
     CWhitelistDlg(_In_ CHidHideClientDlg& hidHideClientDlg, _In_opt_ CWnd* pParent);
     virtual ~CWhitelistDlg();

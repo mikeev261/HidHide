@@ -124,7 +124,7 @@ void CAppProfilesDlg::RefreshApps(HidHide::FullImageName const* selectProfile)
             return 0 == _wcsicmp(DisplayPath(candidate).filename().c_str(), display.filename().c_str());
         }) > 1 };
         auto const label{ duplicateFileName
-            ? display.filename().native() + L" — " + display.parent_path().native()
+            ? display.filename().native() + L" \u2014 " + display.parent_path().native()
             : display.filename().native() };
         m_AppsList.AddString(label.c_str());
         if (selection && (*selection == m_AppPaths[index])) selectedIndex = static_cast<int>(index);
@@ -211,7 +211,7 @@ void CAppProfilesDlg::UpdateStatus()
     bool const running{ m_HidHideClientDlg.ProfileIsActive(*selectedProfile) };
     std::wostringstream status;
     status << (running ? L"Running" : m_HidHideClientDlg.ProfileIsUnresolved(*selectedProfile) ? L"Path unavailable" : L"Not running") << L" \u2022 " << selectedInterfaces << L" interface" << (1 == selectedInterfaces ? L"" : L"s");
-    if (!FilterDriverProxy().GetActive()) status << L" \u2022 hiding disabled";
+    if (!m_HidHideClientDlg.EffectiveHidingEnabled()) status << L" \u2022 hiding disabled";
     m_ProfileStatus.SetWindowTextW(status.str().c_str());
 }
 

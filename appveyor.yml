@@ -2,37 +2,35 @@ version: 1.7.{build}.0
 build_cloud: WIN-LKR467JS4GL
 image: Windows
 configuration: Release
-branches:
-  only:
-    - master
-    - /v\d+\.\d+\.\d+/
-skip_commits:
-  files:
-    - '**/*.md'
+# All branches and pull requests validate the companion.
 test: off
 platform:
-- x64 # ARM64 is built in the same job
+- x64
 install:
-- ps: Setup-VS2022
 - ps: |
+    $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+    $env:HIDHIDE_MSBUILD = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild/**/Bin/MSBuild.exe | Select-Object -First 1
+    if (!$env:HIDHIDE_MSBUILD) { throw 'MSBuild not found; install Visual Studio with v145 x64/ARM64 tools and MFC.' }
     dotnet tool install --global wix --version 5.0.2
-    $dotnetTools = Join-Path $env:USERPROFILE '.dotnet/tools'
-    $env:PATH = "$dotnetTools;$env:PATH"
+    if ($LASTEXITCODE) { throw 'WiX installation failed' }
+    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
     wix extension add -g WixToolset.UI.wixext/5.0.2
-build:
-  parallel: true
-  verbosity: minimal
+    if ($LASTEXITCODE) { throw 'WiX extension installation failed' }
 build_script:
 - ps: |
-    $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" Ci --configuration Release --platform x64
-    if ($LASTEXITCODE -ne 0) { throw "x64 companion build failed." }
-    powershell -ExecutionPolicy Bypass -File ".\build.ps1" Ci --configuration Release --platform ARM64
-    if ($LASTEXITCODE -ne 0) { throw "ARM64 companion build failed." }
+    foreach ($arch in @('x64', 'ARM64')) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 Ci --configuration Release --platform $arch --compiler-path $env:HIDHIDE_MSBUILD
+      if ($LASTEXITCODE) { throw "Companion CI failed for $arch (exit $LASTEXITCODE)" }
+    }
+on_finish:
+- ps: |
+    Get-ChildItem artifacts/tests -Filter results.xml -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+      (New-Object Net.WebClient).UploadFile("https://ci.appveyor.com/api/testresults/junit/$env:APPVEYOR_JOB_ID", $_.FullName)
+    }
 artifacts:
-  # Forward slashes: AppVeyor resolves these reliably from repo root.
 - path: artifacts/msi/**/*.msi
-- path: bin/Release/**/HidHideClient.pdb
-- path: bin/Release/**/HidHideCLI.pdb
-- path: bin/Release/**/HidHideClient.exe
-- path: bin/Release/**/HidHideCLI.exe
+- path: artifacts/logs/**/*.binlog
+- path: artifacts/tests/**/*.xml
+- path: bin/**/*.pdb
+- path: bin/**/HidHide*.exe
+# Publication is intentionally separate from validation.

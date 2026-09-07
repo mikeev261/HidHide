@@ -7,8 +7,7 @@
 #include "Utils.h"
 #include "Volume.h"
 #include "Logging.h"
-#include <ktmw32.h>
-#pragma comment(lib, "KtmW32.lib")
+#include "ConfigurationChannel.h"
 
 namespace
 {
@@ -21,9 +20,17 @@ namespace
     CloseHandlePtr Device(_In_ std::filesystem::path const& deviceName, _In_ bool allowFileNotFound)
     {
         TRACE_ALWAYS(L"");
-        auto handle{ CloseHandlePtr(::CreateFileW(deviceName.native().c_str(), GENERIC_READ, (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE), nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle) };
-        if ((INVALID_HANDLE_VALUE == handle.get()) && ((ERROR_FILE_NOT_FOUND != ::GetLastError()) || (!allowFileNotFound))) THROW_WIN32_LAST_ERROR;
-        return (handle);
+        for (unsigned attempt = 0; ; ++attempt)
+        {
+            auto handle{ CloseHandlePtr(::CreateFileW(deviceName.native().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle) };
+            if (INVALID_HANDLE_VALUE != handle.get()) return handle;
+            auto const error = ::GetLastError();
+            if (allowFileNotFound && error == ERROR_FILE_NOT_FOUND) return handle;
+            if ((error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION) && attempt < 3) { ::Sleep(25); continue; }
+            if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION)
+                throw std::runtime_error("Driver configuration is busy or access was denied. Close the other configuration utility and retry");
+            THROW_WIN32(error);
+        }
     }
 
     // Get a file handle to the device driver; will throw when the device isn't found
@@ -97,51 +104,16 @@ namespace
     void SetAppProfiles(_In_ HidHide::AppProfiles const& appProfiles)
     {
         TRACE_ALWAYS(L"");
-        // Preserve the established value-per-profile schema, but publish the whole
-        // replacement atomically. Closing an uncommitted transaction rolls it back.
-        CloseHandlePtr transaction{ ::CreateTransaction(nullptr, nullptr, 0, 0, 0, 0, nullptr), &::CloseHandle };
-        if (INVALID_HANDLE_VALUE == transaction.get()) THROW_WIN32_LAST_ERROR;
+        HidHide::Configuration state; state.profiles = appProfiles;
+        HidHide::Protocol::Writer writer; writer.Number(HidHide::Protocol::Version); writer.State(state);
         HKEY key{};
         DWORD disposition{};
-        auto status{ ::RegCreateKeyTransactedW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
-            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition, transaction.get(), nullptr) };
+        auto status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) };
         if (ERROR_SUCCESS != status) THROW_WIN32(status);
-
-        // Delete by repeatedly removing index zero; deleting a value compacts the enumeration.
-        for (;;)
-        {
-            std::vector<WCHAR> valueName(32768);
-            DWORD valueNameLength{ static_cast<DWORD>(valueName.size()) };
-            status = ::RegEnumValueW(key, 0, valueName.data(), &valueNameLength, nullptr, nullptr, nullptr, nullptr);
-            if (ERROR_NO_MORE_ITEMS == status) break;
-            if (ERROR_SUCCESS != status)
-            {
-                ::RegCloseKey(key);
-                THROW_WIN32(status);
-            }
-            status = ::RegDeleteValueW(key, valueName.data());
-            if (ERROR_SUCCESS != status)
-            {
-                ::RegCloseKey(key);
-                THROW_WIN32(status);
-            }
-        }
-
-        for (auto const& [imagePath, devices] : appProfiles)
-        {
-            auto buffer{ HidHide::StringListToMultiString(HidHide::StringSetToStringList(devices)) };
-            if (buffer.size() < 2) buffer.emplace_back(L'\0');
-            status = ::RegSetValueExW(key, imagePath.native().c_str(), 0, REG_MULTI_SZ,
-                reinterpret_cast<BYTE const*>(buffer.data()), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)));
-            if (ERROR_SUCCESS != status)
-            {
-                ::RegCloseKey(key);
-                THROW_WIN32(status);
-            }
-        }
-
+        status = ::RegSetValueExW(key, L"ConfigurationV1", 0, REG_BINARY, writer.data.data(), static_cast<DWORD>(writer.data.size()));
         ::RegCloseKey(key);
-        if (!::CommitTransaction(transaction.get())) THROW_WIN32_LAST_ERROR;
+        if (ERROR_SUCCESS != status) THROW_WIN32(status);
     }
 
     // Read profiles from the per-user store. Scanning the full
@@ -151,9 +123,28 @@ namespace
     {
         HidHide::AppProfiles result;
         HKEY key{};
-        auto const openStatus = ::RegOpenKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, KEY_READ, &key);
-        if (ERROR_FILE_NOT_FOUND == openStatus) return result;
-        if (ERROR_SUCCESS != openStatus) THROW_WIN32(openStatus);
+        auto const opened = ::RegOpenKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, KEY_READ, &key);
+        if (opened == ERROR_FILE_NOT_FOUND) return result;
+        if (opened != ERROR_SUCCESS) THROW_WIN32(opened);
+        DWORD blobType{}, blobSize{};
+        auto const blobStatus = ::RegQueryValueExW(key, L"ConfigurationV1", nullptr, &blobType, nullptr, &blobSize);
+        if (blobStatus != ERROR_FILE_NOT_FOUND)
+        {
+            try
+            {
+                if (blobStatus != ERROR_SUCCESS || blobType != REG_BINARY || blobSize > HidHide::Protocol::MaxBytes)
+                    throw std::runtime_error("Malformed or oversized profile store");
+                std::vector<std::uint8_t> bytes(blobSize);
+                if (::RegQueryValueExW(key, L"ConfigurationV1", nullptr, &blobType, bytes.data(), &blobSize) != ERROR_SUCCESS || blobType != REG_BINARY)
+                    throw std::runtime_error("Cannot read profile store");
+                bytes.resize(blobSize);
+                HidHide::Protocol::Reader reader(bytes);
+                if (reader.Number() != HidHide::Protocol::Version) throw std::runtime_error("Unsupported profile store version");
+                result = reader.State().profiles; reader.End();
+                ::RegCloseKey(key); return result;
+            }
+            catch (...) { ::RegCloseKey(key); throw; }
+        }
 
         for (DWORD index = 0;; index++)
         {
@@ -163,15 +154,13 @@ namespace
             DWORD dataSize{};
             auto const status{ ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type, nullptr, &dataSize) };
             if (ERROR_NO_MORE_ITEMS == status) break;
-            if (ERROR_SUCCESS != status) { ::RegCloseKey(key); THROW_WIN32(status); }
-            if ((REG_MULTI_SZ != type) || (0 == valueNameLength)) continue;
+            if ((ERROR_SUCCESS != status) || (REG_MULTI_SZ != type) || (0 == valueNameLength)) continue;
 
             std::vector<WCHAR> buffer((dataSize / sizeof(WCHAR)) + 1, L'\0');
             valueNameLength = static_cast<DWORD>(valueName.size());
             DWORD readSize{ dataSize };
-            auto const readStatus = ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type,
-                reinterpret_cast<LPBYTE>(buffer.data()), &readSize);
-            if (ERROR_SUCCESS != readStatus) { ::RegCloseKey(key); THROW_WIN32(readStatus); }
+            if (ERROR_SUCCESS != ::RegEnumValueW(key, index, valueName.data(), &valueNameLength, nullptr, &type,
+                reinterpret_cast<LPBYTE>(buffer.data()), &readSize)) continue;
 
             std::filesystem::path imagePath{ std::wstring(valueName.data(), valueNameLength) };
             if (0 != _wcsnicmp(imagePath.native().c_str(), L"\\Device\\", 8))
@@ -226,80 +215,224 @@ namespace
         if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WLINVERSE), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(BOOLEAN)), nullptr, 0, &needed, nullptr))
         {
             auto const lastError{ ::GetLastError() };
-            // Unsupported writes must not be acknowledged as persisted changes.
+            if (ERROR_INVALID_PARAMETER == lastError || ERROR_NOT_SUPPORTED == lastError || ERROR_INVALID_FUNCTION == lastError) return;
             THROW_WIN32(lastError);
         }
     }
 }
 
-namespace
-{
-    class WindowsConfigurationBackend : public HidHide::ConfigurationBackend
-    {
-        HANDLE m_Device{};
-        struct Operation : Lease
-        {
-            WindowsConfigurationBackend& backend;
-            CloseHandlePtr mutex{ nullptr, &::CloseHandle };
-            CloseHandlePtr device{ nullptr, &::CloseHandle };
-            bool locked{};
-            explicit Operation(WindowsConfigurationBackend& owner) : backend(owner)
-            {
-                mutex.reset(::CreateMutexW(nullptr, FALSE, L"Global\\HidHide.Configuration"));
-                if (!mutex) THROW_WIN32_LAST_ERROR;
-                DWORD const result = ::WaitForSingleObject(mutex.get(), 10000);
-                if (result != WAIT_OBJECT_0 && result != WAIT_ABANDONED) THROW_WIN32(ERROR_BUSY);
-                locked = true;
-                try { device = ::Device(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME)); }
-                catch (...) { ::ReleaseMutex(mutex.get()); locked = false; throw; }
-                backend.m_Device = device.get();
-            }
-            ~Operation() override
-            {
-                backend.m_Device = nullptr;
-                device.reset();
-                if (locked) ::ReleaseMutex(mutex.get());
-            }
-        };
-    public:
-        std::unique_ptr<Lease> Acquire() override { return std::make_unique<Operation>(*this); }
-        bool ReadActive() override { return ::GetActive(m_Device); }
-        void WriteActive(bool const& value) override { ::SetActive(m_Device, value); }
-        HidHide::DeviceInstancePaths ReadBlacklist() override { return ::GetBlacklist(m_Device); }
-        void WriteBlacklist(HidHide::DeviceInstancePaths const& value) override { ::SetBlacklist(m_Device, value); }
-        HidHide::FullImageNames ReadWhitelist() override { return ::GetWhitelist(m_Device); }
-        void WriteWhitelist(HidHide::FullImageNames const& value) override { ::SetWhitelist(m_Device, value); }
-        HidHide::AppProfiles ReadAppProfiles() override { return ::GetAppProfiles(); }
-        void WriteAppProfiles(HidHide::AppProfiles const& value) override { ::SetAppProfiles(value); }
-        bool ReadInverse() override { return ::GetInverse(m_Device); }
-        void WriteInverse(bool const& value) override { ::SetInverse(m_Device, value); }
-    };
-    std::shared_ptr<HidHide::ConfigurationBackend> MakeBackend()
-    {
-        auto backend = std::make_shared<WindowsConfigurationBackend>();
-        auto lease = backend->Acquire();
-        auto whitelist = backend->ReadWhitelist();
-        if (auto const image = HidHide::FileNameToFullImageName(HidHide::ModuleFileName()); !image.empty())
-        {
-            auto const inverse = backend->ReadInverse();
-            if ((!inverse && whitelist.emplace(image).second)
-                || (inverse && whitelist.erase(image))) backend->WriteWhitelist(whitelist);
-        }
-        return backend;
-    }
-}
+
 namespace HidHide
 {
-    FilterDriverProxy::FilterDriverProxy(bool writeThrough)
-        : ConfigurationSession(MakeBackend(), writeThrough ? ConfigurationMode::Live : ConfigurationMode::Snapshot) {}
+    namespace
+    {
+        Configuration Snapshot(HANDLE device)
+        {
+            Configuration s;
+            s.active = ::GetActive(device); s.inverse = ::GetInverse(device);
+            s.blacklist = ::GetBlacklist(device); s.whitelist = ::GetWhitelist(device);
+            s.profiles = ::GetAppProfiles();
+            return s;
+        }
+        void RequireNoRecovery()
+        {
+            HKEY key{};
+            auto const error = ::RegOpenKeyExW(HKEY_CURRENT_USER,
+                L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileRuntime", 0, KEY_READ, &key);
+            if (error == ERROR_SUCCESS) { ::RegCloseKey(key); throw std::runtime_error("Profile recovery is pending. Open the companion manager before changing settings"); }
+            if (error != ERROR_FILE_NOT_FOUND) throw std::runtime_error("Cannot check profile recovery ownership");
+        }
+        Configuration Remote(Protocol::Writer request)
+        {
+            auto response = Channel::Exchange(std::move(request.data));
+            Protocol::Reader reader(response);
+            if (reader.Number() != Protocol::Version) throw std::runtime_error("Unsupported coordinator protocol");
+            if (reader.Number())
+            {
+                auto error = reader.String(); reader.End();
+                std::string message; for (auto c : error) message.push_back(c < 128 ? static_cast<char>(c) : '?');
+                throw std::runtime_error(message);
+            }
+            auto state = reader.State(); reader.End(); return state;
+        }
+    }
+
+    Configuration FilterDriverProxy::ReadDriverConfiguration()
+    {
+        auto device = ::Device(StringTable(IDS_CONTROL_DEVICE_NAME));
+        return Snapshot(device.get());
+    }
+
+    void FilterDriverProxy::CommitDriverConfiguration(Configuration const& expected, Configuration const& desired)
+    {
+        auto device = ::Device(StringTable(IDS_CONTROL_DEVICE_NAME));
+        auto const current = Snapshot(device.get());
+        if (current != expected) throw ConfigurationConflict("Configuration changed outside this transaction. Refresh and resolve the conflict before retrying");
+        // IOCTLs are not atomic. Disable first, enable last; a failed/partial write
+        // does not advance confirmed state and will fail the next expected-state check.
+        if (current.active && !desired.active) ::SetActive(device.get(), false);
+        if (current.whitelist != desired.whitelist) ::SetWhitelist(device.get(), desired.whitelist);
+        if (current.blacklist != desired.blacklist) ::SetBlacklist(device.get(), desired.blacklist);
+        if (current.inverse != desired.inverse) ::SetInverse(device.get(), desired.inverse);
+        if (current.profiles != desired.profiles) ::SetAppProfiles(desired.profiles);
+        if (!current.active && desired.active) ::SetActive(device.get(), true);
+        if (Snapshot(device.get()) != desired) throw std::runtime_error("Driver did not confirm the requested configuration; refresh before retrying");
+    }
+
+    _Use_decl_annotations_
+    FilterDriverProxy::FilterDriverProxy(bool writeThrough, bool coordinator)
+        : m_WriteThrough(writeThrough), m_Coordinator(coordinator)
+    {
+        Refresh();
+        // Reading configuration has no side effects. The user's whitelist is
+        // changed only by an explicit GUI/CLI command.
+    }
+
+    void FilterDriverProxy::SetCoordinator(std::function<Configuration()> read,
+        std::function<void(Configuration const&, Configuration const&, bool)> commit)
+    {
+        m_Read = std::move(read); m_Commit = std::move(commit);
+        Refresh();
+    }
+
+    Configuration FilterDriverProxy::Read()
+    {
+        if (m_Read) return m_Read();
+        if (m_Coordinator) return ReadDriverConfiguration();
+        Channel::Lease lease;
+        if (lease.Acquired()) return ReadDriverConfiguration();
+        Protocol::Writer request; request.Number(Protocol::Version); request.Number(static_cast<std::uint32_t>(Protocol::Command::Read));
+        return Remote(std::move(request));
+    }
+
+    void FilterDriverProxy::Refresh() { auto fresh = Read(); m_Cache = fresh; m_Original = std::move(fresh); m_DisableRequested = false; }
+
+    void FilterDriverProxy::Commit(Configuration const& desired)
+    {
+        if (m_Commit) m_Commit(m_Original, desired, m_DisableRequested);
+        else if (m_Coordinator) CommitDriverConfiguration(m_Original, desired);
+        else
+        {
+            Channel::Lease lease;
+            if (lease.Acquired())
+            {
+                if (desired != m_Original || m_DisableRequested) { RequireNoRecovery(); CommitDriverConfiguration(m_Original, desired); }
+            }
+            else
+            {
+                Protocol::Writer request; request.Number(Protocol::Version); request.Number(static_cast<std::uint32_t>(Protocol::Command::Commit));
+                request.State(m_Original); request.State(desired); request.Number(m_DisableRequested);
+                auto confirmed = Remote(std::move(request));
+                if (confirmed != desired) throw std::runtime_error("Coordinator did not confirm requested settings");
+            }
+        }
+        m_Cache = desired; m_Original = desired; m_DisableRequested = false;
+    }
+
+    void FilterDriverProxy::Change(Configuration const& desired)
+    {
+        if (m_WriteThrough) Commit(desired);
+        else m_Cache = desired;
+    }
+
+    void FilterDriverProxy::ApplyConfigurationChanges()
+    {
+        if (m_WriteThrough) THROW_WIN32(ERROR_INVALID_PARAMETER);
+        // A read-only CLI invocation does not submit an obsolete snapshot.
+        if (m_Cache != m_Original || m_DisableRequested) Commit(m_Cache);
+    }
+
+    std::vector<std::uint8_t> FilterDriverProxy::HandleRequest(std::vector<std::uint8_t> const& request)
+    {
+        Protocol::Writer response; response.Number(Protocol::Version);
+        try
+        {
+            Protocol::Reader reader(request);
+            if (reader.Number() != Protocol::Version) throw std::runtime_error("Unsupported coordinator protocol");
+            auto command = static_cast<Protocol::Command>(reader.Number());
+            if (command == Protocol::Command::Read) { reader.End(); response.Number(0); response.State(Read()); }
+            else if (command == Protocol::Command::Commit)
+            {
+                auto expected = reader.State(); auto desired = reader.State(); auto disable = reader.Boolean(); reader.End();
+                if (!m_Commit) throw std::runtime_error("Coordinator is not ready");
+                m_Commit(expected, desired, disable);
+                response.Number(0); response.State(desired);
+                Refresh();
+            }
+            else throw std::runtime_error("Unknown configuration command");
+        }
+        catch (std::exception const& error)
+        {
+            response = {}; response.Number(Protocol::Version); response.Number(1);
+            std::string message(error.what()); response.String(std::wstring(message.begin(), message.end()));
+        }
+        return response.data;
+    }
 
     DWORD FilterDriverProxy::DeviceStatus()
     {
-        CloseHandlePtr handle{ ::CreateFileW(HidHide::StringTable(IDS_CONTROL_DEVICE_NAME).c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle };
-        if (INVALID_HANDLE_VALUE != handle.get()) return ERROR_SUCCESS;
-        auto const error = ::GetLastError();
-        if (ERROR_ACCESS_DENIED != error && ERROR_FILE_NOT_FOUND != error) THROW_WIN32(error);
-        return error;
+        auto handle = CloseHandlePtr(::CreateFileW(StringTable(IDS_CONTROL_DEVICE_NAME).c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr), &::CloseHandle);
+        return handle.get() == INVALID_HANDLE_VALUE ? ::GetLastError() : ERROR_SUCCESS;
     }
+
+    bool FilterDriverProxy::GetActive() const { return m_Cache.active; }
+    bool FilterDriverProxy::GetInverse() const { return m_Cache.inverse; }
+    DeviceInstancePaths FilterDriverProxy::GetBlacklist() const { return m_Cache.blacklist; }
+    FullImageNames FilterDriverProxy::GetWhitelist() const { return m_Cache.whitelist; }
+    AppProfiles FilterDriverProxy::GetAppProfiles() const { return m_Cache.profiles; }
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetActive(bool value) { auto desired = m_Cache; desired.active = value; m_DisableRequested = !value; Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetInverse(bool value) { auto desired = m_Cache; desired.inverse = value; Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetBlacklist(DeviceInstancePaths const& value) { auto desired = m_Cache; desired.blacklist = value; Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetWhitelist(FullImageNames const& value) { auto desired = m_Cache; desired.whitelist = value; Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::SetAppProfiles(AppProfiles const& value) { auto desired = m_Cache; desired.profiles = value; Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::BlacklistAddEntry(DeviceInstancePath const& value) { auto desired = m_Cache; desired.blacklist.insert(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::BlacklistDelEntry(DeviceInstancePath const& value) { auto desired = m_Cache; desired.blacklist.erase(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::WhitelistAddEntry(FullImageName const& value) { auto desired = m_Cache; desired.whitelist.insert(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::WhitelistDelEntry(FullImageName const& value) { auto desired = m_Cache; desired.whitelist.erase(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileAdd(FullImageName const& value) { auto desired = m_Cache; desired.profiles.try_emplace(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileDelete(FullImageName const& value) { auto desired = m_Cache; desired.profiles.erase(value); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileAddEntry(FullImageName const& path, DeviceInstancePath const& device)
+    { auto desired = m_Cache; desired.profiles[path].insert(device); Change(desired); }
+    _Use_decl_annotations_
+    void FilterDriverProxy::AppProfileDelEntry(FullImageName const& path, DeviceInstancePath const& device)
+    { auto desired = m_Cache; auto it = desired.profiles.find(path); if (it != desired.profiles.end()) it->second.erase(device); Change(desired); }
+    void FilterDriverProxy::SetBlacklist(DeviceInstancePaths const& expected, DeviceInstancePaths const& value)
+    {
+        if (m_Cache.blacklist != expected) throw ConfigurationConflict("Blacklist view changed; refresh and retry");
+        SetBlacklist(value);
+    }
+    void FilterDriverProxy::SetWhitelist(FullImageNames const& expected, FullImageNames const& value)
+    {
+        if (m_Cache.whitelist != expected) throw ConfigurationConflict("Whitelist view changed; refresh and retry");
+        SetWhitelist(value);
+    }
+    void FilterDriverProxy::SetAppProfiles(AppProfiles const& expected, AppProfiles const& value)
+    {
+        if (m_Cache.profiles != expected) throw ConfigurationConflict("AppProfiles view changed; refresh and retry");
+        SetAppProfiles(value);
+    }
+    void FilterDriverProxy::SetActive(bool const& expected, bool const& value)
+    {
+        if (m_Cache.active != expected) throw ConfigurationConflict("Active view changed; refresh and retry");
+        SetActive(value);
+    }
+    void FilterDriverProxy::SetInverse(bool const& expected, bool const& value)
+    {
+        if (m_Cache.inverse != expected) throw ConfigurationConflict("Inverse view changed; refresh and retry");
+        SetInverse(value);
+    }
+
 }

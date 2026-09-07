@@ -140,7 +140,7 @@ void CBlacklistDlg::RefreshDevices()
     TRACE_ALWAYS(L"");
     // Read everything before changing controls, so contention retains the view.
     auto const deviceInstancePathsBlacklisted{ m_HidHideClientDlg.Baseline() };
-    auto const active{ FilterDriverProxy().GetActive() };
+    auto const active{ m_HidHideClientDlg.EffectiveHidingEnabled() };
     auto devices = HidHide::HidDevices(false);
     m_Refreshing = true;
     m_AcknowledgedTree.clear();
@@ -198,8 +198,10 @@ void CBlacklistDlg::OnBnClickedCheckGaming()
 void CBlacklistDlg::SynchronizeActiveState()
 {
     if (!m_Enable.GetSafeHwnd()) return;
-    HidHide::SynchronizeActiveState(FilterDriverProxy(), m_DisplayedActive,
-        [this](bool active) { m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED); });
+    bool const active = m_HidHideClientDlg.EffectiveHidingEnabled();
+    if (active == m_DisplayedActive) return;
+    m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED);
+    m_DisplayedActive = active;
 }
 
 void CBlacklistDlg::OnBnClickedCheckEnable()

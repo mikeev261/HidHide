@@ -7,6 +7,7 @@
 #include "WhitelistDlg.h"
 #include "AppProfilesDlg.h"
 #include "ProfileManager.h"
+#include "ConfigurationChannel.h"
 
 extern UINT const WM_HIDHIDE_SHOW_MANAGER;
 
@@ -25,11 +26,12 @@ public:
 
     // Allow child dialogs access to the shared filter driver proxy
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
+    bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept;
     HidHide::DeviceInstancePaths Baseline();
     void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
     void SetEnabled(bool displayed, bool requested);
-    bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
-    bool ProfileIsUnresolved(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool EffectiveHidingEnabled() const;
 
 private:
 
@@ -92,6 +94,7 @@ private:
     // Acquire exclusive access to the filter driver
     std::unique_ptr<HidHide::FilterDriverProxy> m_FilterDriverProxy;
     std::unique_ptr<CProfileManager> m_ProfileManager;
+    std::unique_ptr<HidHide::Channel::Server> m_ConfigurationServer;
 
     // Drop file support
     CDropTarget m_DropTarget;
@@ -109,6 +112,7 @@ private:
     bool m_Exiting{};
     bool m_HideNoticeShown{};
     size_t m_LastTrayProfileCount{ static_cast<size_t>(-1) };
+    std::wstring m_LastStatus;
 
     void AddTrayIcon();
     void RemoveTrayIcon() noexcept;
@@ -117,7 +121,6 @@ private:
     void UpdateTrayTooltip();
 
     // Events
-    afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
     afx_msg void OnPaint();
     afx_msg HCURSOR OnQueryDragIcon();
     afx_msg void OnTcnSelchangeTabApplication(_In_ NMHDR* pNMHDR, _Out_ LRESULT* pResult);
@@ -125,6 +128,7 @@ private:
     afx_msg void OnTimer(_In_ UINT_PTR nIDEvent);
     afx_msg void OnClose();
     afx_msg void OnDestroy();
+    afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
     afx_msg LRESULT OnTrayIcon(_In_ WPARAM wParam, _In_ LPARAM lParam);
     afx_msg LRESULT OnHideAfterStart(_In_ WPARAM wParam, _In_ LPARAM lParam);
     afx_msg LRESULT OnShowManager(_In_ WPARAM wParam, _In_ LPARAM lParam);

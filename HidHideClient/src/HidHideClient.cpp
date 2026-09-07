@@ -7,6 +7,7 @@
 #include "FilterDriverProxy.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "ConfigurationChannel.h"
 
 CHidHideClientApp theApp;
 
@@ -17,7 +18,7 @@ END_MESSAGE_MAP()
 namespace
 {
     HHOOK s_hHook;
-    HANDLE s_InstanceMutex{};
+    std::unique_ptr<HidHide::Channel::Lease> s_Owner;
 
     // Alter message box labels and detach from the window activiation notification
     LRESULT CALLBACK LocalizedMessageBoxCBTProc(_In_ INT code, _In_ WPARAM wParam, _In_ LPARAM lParam)
@@ -98,7 +99,7 @@ CHidHideClientApp::CHidHideClientApp() noexcept
 
 CHidHideClientApp::~CHidHideClientApp()
 {
-    if (nullptr != s_InstanceMutex) ::CloseHandle(s_InstanceMutex);
+    s_Owner.reset();
     ::LogUnregisterProviders();
 }
 
@@ -132,11 +133,12 @@ BOOL CHidHideClientApp::InitInstance()
     for (int index = 1; index < __argc; index++)
         startHidden = startHidden || (0 == _wcsicmp(__wargv[index], L"--background"));
 
-    s_InstanceMutex = ::CreateMutexW(nullptr, FALSE, L"Local\\HidHide.AppProfiles.Manager");
-    if (nullptr == s_InstanceMutex) return FALSE;
-    if (ERROR_ALREADY_EXISTS == ::GetLastError())
+    try { s_Owner = std::make_unique<HidHide::Channel::Lease>(); }
+    catch (std::exception const& error) { ::MessageBoxA(nullptr, error.what(), "HidHide ownership", MB_OK | MB_ICONERROR); return FALSE; }
+    if (!s_Owner->Acquired())
     {
         if (!startHidden) ::PostMessageW(HWND_BROADCAST, WM_HIDHIDE_SHOW_MANAGER, 0, 0);
+        if (!startHidden) ::MessageBoxW(nullptr, L"The configuration coordinator is already running, possibly in another Windows session. Only one session can own automatic profiles.", L"HidHide App Profiles", MB_OK | MB_ICONINFORMATION);
         return FALSE;
     }
 

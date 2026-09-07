@@ -124,7 +124,7 @@ void CAppProfilesDlg::RefreshApps(HidHide::FullImageName const* selectProfile)
             return 0 == _wcsicmp(DisplayPath(candidate).filename().c_str(), display.filename().c_str());
         }) > 1 };
         auto const label{ duplicateFileName
-            ? display.filename().native() + L" â€” " + display.parent_path().native()
+            ? display.filename().native() + L" \u2014 " + display.parent_path().native()
             : display.filename().native() };
         m_AppsList.AddString(label.c_str());
         if (selection && (*selection == m_AppPaths[index])) selectedIndex = static_cast<int>(index);

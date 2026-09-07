@@ -24,14 +24,12 @@
     "ExecutableTarget": {
       "type": "string",
       "enum": [
-        "BuildCab",
         "BuildMsi",
         "Ci",
         "Clean",
         "Compile",
         "Restore",
         "StageInstallerPayload",
-        "TestSignStagingDriver",
         "UnitTest"
       ]
     },
@@ -109,15 +107,6 @@
         "Configuration": {
           "type": "string",
           "description": "Configuration to build - Default is 'Debug' (local) or 'Release' (server)"
-        },
-        "HidHideTestSignPfx": {
-          "type": "string",
-          "description": "Optional path to PFX for CI test-signing MSI staging driver files. If omitted or missing, a throwaway code-signing PFX is generated (see AppVeyor env HIDHIDE_TEST_SIGN_PFX)"
-        },
-        "HidHideTestSignPfxPassword": {
-          "type": "string",
-          "description": "PFX password when using HIDHIDE_TEST_SIGN_PFX (required if that file exists; see HIDHIDE_TEST_SIGN_PFX_PASSWORD)",
-          "default": "Secrets must be entered via 'nuke :secrets [profile]'"
         },
         "Platform": {
           "type": "string",

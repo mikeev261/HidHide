@@ -1,105 +1,17 @@
-// (c) Eric Korff de Gidts
 // SPDX-License-Identifier: MIT
-// FilterDriverProxy.h
 #pragma once
-
+#include "ConfigurationSession.h"
 namespace HidHide
 {
-    typedef std::wstring DeviceInstancePath;
-    typedef std::set<DeviceInstancePath> DeviceInstancePaths;
-    typedef std::filesystem::path FullImageName;
-    typedef std::set<FullImageName> FullImageNames;
-
-    typedef std::map<FullImageName, DeviceInstancePaths> AppProfiles;
-
-    class FilterDriverProxy
+    // Live sessions refresh each getter; snapshot sessions stage changes until commit.
+    // Driver access is scoped to each operation so the signed exclusive driver does
+    // not prevent a running GUI from observing CLI changes.
+    class FilterDriverProxy : public ConfigurationSession
     {
     public:
-
-        FilterDriverProxy() noexcept = delete;
-        FilterDriverProxy(_In_ FilterDriverProxy const& rhs) = delete;
-        FilterDriverProxy(_In_ FilterDriverProxy&& rhs) noexcept = delete;
-        FilterDriverProxy& operator=(_In_ FilterDriverProxy const& rhs) = delete;
-        FilterDriverProxy& operator=(_In_ FilterDriverProxy&& rhs) = delete;
-
-        // Exclusively lock the device driver, fill the cache layer, and ensure the module file name is always on the whitelist
-        explicit FilterDriverProxy(_In_ bool writeThrough);
-        ~FilterDriverProxy() = default;
-
-        // Get the control device state
-        // Returns ERROR_SUCCESS when available for use
-        // Returns FILE_NOT_FOUND when the device is disabled (assuming it is installed)
-        // Returns ACCESS_DENIED when in use (assuming it is not an ACL issue)
+        explicit FilterDriverProxy(bool writeThrough);
+        FilterDriverProxy(FilterDriverProxy const&) = delete;
+        FilterDriverProxy& operator=(FilterDriverProxy const&) = delete;
         static DWORD DeviceStatus();
-
-        // Apply the configuration changes (if any)
-        // Throws when the class is using write-through
-        void ApplyConfigurationChanges();
-
-        // Get the device Instance Paths of the Human Interface Devices that are on the black-list (may reference not present devices)
-        DeviceInstancePaths GetBlacklist() const;
-
-        // Set the device Instance Paths of the Human Interface Devices that are on the black-list
-        void SetBlacklist(_In_ DeviceInstancePaths const& deviceInstancePaths);
-
-        // Add a device to the black-list
-        void BlacklistAddEntry(_In_ DeviceInstancePath const& deviceInstancePath);
-
-        // Delete a device from the white-list
-        void BlacklistDelEntry(_In_ DeviceInstancePath const& deviceInstancePath);
-
-        // Get the applications on the white-list
-        FullImageNames GetWhitelist() const;
-
-        // Set the applications on the white-list
-        void SetWhitelist(_In_ FullImageNames const& fullImageNames);
-
-        // Add an application to the white-list
-        void WhitelistAddEntry(_In_ FullImageName const& fullImageName);
-
-        // Delete an application from the white-list
-        void WhitelistDelEntry(_In_ FullImageName const& fullImageName);
-
-        // Get the app profiles
-        AppProfiles GetAppProfiles() const;
-
-        // Set the app profiles
-        void SetAppProfiles(_In_ AppProfiles const& appProfiles);
-
-        // Create an empty application profile.
-        void AppProfileAdd(_In_ FullImageName const& fullImageName);
-
-        // Delete an application profile and all of its device entries.
-        void AppProfileDelete(_In_ FullImageName const& fullImageName);
-
-        // Add a device to an app profile
-        void AppProfileAddEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
-
-        // Delete a device from an app profile
-        void AppProfileDelEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
-
-        // Get the current enabled state; returns true when the device is active in hiding devices on the black-list
-        bool GetActive() const;
-
-        // Set the current enabled state
-        void SetActive(_In_ bool active);
-
-        // Get the current whitelist inverse state; returns true when the whitelist logic is the inverse (effectively an application backlist)
-        bool GetInverse() const;
-
-        // Set the current whitelist inverse state
-        void SetInverse(_In_ bool inverse);
-
-    private:
-
-        typedef std::unique_ptr<std::remove_pointer<HANDLE>::type, decltype(&::CloseHandle)> CloseHandlePtr;
-
-        bool const           m_WriteThrough; // Flag indicating that changes should be applied instantly
-        CloseHandlePtr const m_Device;       // The handle to the filter driver
-        bool                 m_Active;       // Indicates if the filter driver is hiding devices or not
-        DeviceInstancePaths  m_Blacklist;    // The device instance paths of the blacklisted HID devices
-        FullImageNames       m_Whitelist;    // The full image names of the whitelisted applications
-        AppProfiles          m_AppProfiles;  // The application profiles mapping full image name to device instance paths
-        bool                 m_Inverse;      // Indicates if the inverse whitelist is enabled
     };
 }

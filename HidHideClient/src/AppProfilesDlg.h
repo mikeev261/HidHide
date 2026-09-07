@@ -3,7 +3,7 @@
 #pragma once
 
 #include "FilterDriverProxy.h"
-#include "HID.h"
+#include "DeviceSelectionTree.h"
 #include "IDropTarget.h"
 
 #include <optional>
@@ -17,6 +17,7 @@ class CAppProfilesDlg : public CDialogEx, public HidHide::IDropTarget
 public:
     CAppProfilesDlg(_In_ CHidHideClientDlg& hidHideClientDlg, _In_opt_ CWnd* pParent);
     virtual ~CAppProfilesDlg();
+    void DevicesChanged() { m_RefreshPending = true; }
 
     DROPEFFECT OnDragEnter(_In_ CWnd* pWnd, _In_ COleDataObject* pDataObject, _In_ DWORD dwKeyState, _In_ CPoint point) override;
     DROPEFFECT OnDragOver(_In_ CWnd* pWnd, _In_ COleDataObject* pDataObject, _In_ DWORD dwKeyState, _In_ CPoint point) override;
@@ -36,15 +37,11 @@ private:
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
 
     void RefreshApps(_In_opt_ HidHide::FullImageName const* selectProfile = nullptr);
-    void RefreshDevices();
+    void RefreshDevices(HidHide::AppProfiles const& profiles);
     void UpdateProfileFromTree();
     void UpdateStatus();
     std::optional<HidHide::FullImageName> SelectedProfile() const;
     std::filesystem::path DisplayPath(_In_ HidHide::FullImageName const& fullImageName) const;
-    std::wstring ParentLabel(_In_ std::wstring const& friendlyName, _In_ std::vector<HidHide::HidDeviceInformation> const& devices, _In_ bool duplicateFriendlyName) const;
-    std::wstring ChildLabel(_In_ HidHide::HidDeviceInformation const& device, _In_ bool duplicateUsage) const;
-    bool IsApplicationRunning(_In_ std::filesystem::path const& applicationPath) const;
-
     CListBox m_AppsList;
     CTreeCtrl m_DevicesTree;
     CButton m_GamingOnly;
@@ -53,10 +50,12 @@ private:
     CStatic m_ProfileStatus;
 
     std::vector<HidHide::FullImageName> m_AppPaths;
-    HidHide::FriendlyNamesAndHidDeviceInformation m_DeviceItemData;
-    std::map<HTREEITEM, std::vector<HidHide::HidDeviceInformation> const*> m_ParentItems;
-    std::map<HTREEITEM, HidHide::HidDeviceInformation const*> m_ChildItems;
+    DeviceSelectionTree m_Selector;
     HidHide::FullImageNames m_DropTargetFullImageNames;
+    HidHide::AppProfiles m_DisplayedProfiles;
+    std::optional<HidHide::FullImageName> m_DisplayedProfile;
+    bool m_RefreshPending{ false };
+    bool m_SavePending{ false };
     bool m_Refreshing{ false };
 
     afx_msg void OnLbnSelchangeListApps();

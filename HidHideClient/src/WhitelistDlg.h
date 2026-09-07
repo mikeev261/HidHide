@@ -55,6 +55,9 @@ private:
     // Attributes
     HidHide::FullImageNames m_DropTargetFullImageNames;
 
+    HidHide::FullImageNames m_DisplayedWhitelist;
+    bool m_DisplayedInverse{};
+
     // Controls
     CListBox m_Whitelist;
     CStatic  m_Guidance;

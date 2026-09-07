@@ -17,6 +17,7 @@ END_MESSAGE_MAP()
 namespace
 {
     HHOOK s_hHook;
+    HANDLE s_InstanceMutex{};
 
     // Alter message box labels and detach from the window activiation notification
     LRESULT CALLBACK LocalizedMessageBoxCBTProc(_In_ INT code, _In_ WPARAM wParam, _In_ LPARAM lParam)
@@ -97,6 +98,7 @@ CHidHideClientApp::CHidHideClientApp() noexcept
 
 CHidHideClientApp::~CHidHideClientApp()
 {
+    if (nullptr != s_InstanceMutex) ::CloseHandle(s_InstanceMutex);
     ::LogUnregisterProviders();
 }
 
@@ -126,7 +128,19 @@ BOOL CHidHideClientApp::InitInstance()
     CMFCVisualManager::SetDefaultManager(RUNTIME_CLASS(CMFCVisualManagerWindows));
 
     // We can't do anything when the control device isn't present so allow for a retry on failure
-    CHidHideClientDlg dlg(nullptr);
+    bool startHidden{};
+    for (int index = 1; index < __argc; index++)
+        startHidden = startHidden || (0 == _wcsicmp(__wargv[index], L"--background"));
+
+    s_InstanceMutex = ::CreateMutexW(nullptr, FALSE, L"Local\\HidHide.AppProfiles.Manager");
+    if (nullptr == s_InstanceMutex) return FALSE;
+    if (ERROR_ALREADY_EXISTS == ::GetLastError())
+    {
+        if (!startHidden) ::PostMessageW(HWND_BROADCAST, WM_HIDHIDE_SHOW_MANAGER, 0, 0);
+        return FALSE;
+    }
+
+    CHidHideClientDlg dlg(nullptr, startHidden);
     m_pMainWnd = &dlg;
 
     // We use exception handling so catch it at top-level and bail out

@@ -106,3 +106,24 @@ by the local same-session tests; package 04 still needs exhaustive fault injecti
 Local logs: `artifacts/package02-tests.log`, `artifacts/package02-contention.txt`,
 `artifacts/package02-live.log`, and `artifacts/package02-conflict.log`. These logs
 are evidence of the tested scenarios, not a completed release/integration matrix.
+
+## Integrated feature-branch verification
+
+Merged `feature/app-profiles` at `7681826` and retained its shared device selector,
+explicit displayed-value checks and rollback, device refresh retries, and exact
+process-path matching with unresolved-path status. The coordinator remains the
+single production transaction owner. The retained ConfigurationSession tests
+exercise the earlier standalone session implementation; they do not substitute
+for testing the coordinator's Windows IPC and live driver paths.
+
+Release x64 GUI, CLI, and Tests rebuilt successfully; all 74 tests passed.
+Live tests against the installed signed driver confirmed baseline A plus profile
+A+B, adding C, persistent disable across restart, external-edit conflict retention,
+rejected conflicting writes, and crash/restart restoration. The conflict harness
+was adjusted to allow the CLI's expected nonzero stderr result in Windows
+PowerShell. Both probes completed and restored the original driver/profile state,
+pause preference, and autostart entry. No physical device IDs were used.
+
+Logs: `artifacts/pr20-merge-build.log`, `artifacts/pr20-merge-live.log`, and
+`artifacts/pr20-merge-recovery.log`. Interactive MFC failure injection and the
+broader release/integration limits above remain unverified.

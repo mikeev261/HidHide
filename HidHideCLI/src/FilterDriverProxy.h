@@ -3,6 +3,7 @@
 // FilterDriverProxy.h
 #pragma once
 #include "Configuration.h"
+#include "ConfigurationSession.h"
 #include <functional>
 
 namespace HidHide
@@ -92,6 +93,16 @@ namespace HidHide
 
         // Set the current whitelist inverse state
         void SetInverse(_In_ bool inverse);
+
+        void SetBlacklist(DeviceInstancePaths const& expected, DeviceInstancePaths const& value);
+
+        void SetWhitelist(FullImageNames const& expected, FullImageNames const& value);
+
+        void SetAppProfiles(AppProfiles const& expected, AppProfiles const& value);
+
+        void SetActive(bool const& expected, bool const& value);
+
+        void SetInverse(bool const& expected, bool const& value);
 
     private:
 

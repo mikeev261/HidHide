@@ -29,6 +29,8 @@ public:
 
     size_t ActiveProfileCount() const noexcept { return m_ActiveProfileCount; }
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept;
+    void SetEnabled(bool displayed, bool requested);
     bool OverrideActive() const noexcept { return m_OverrideActive; }
     std::wstring Status() const { return m_Status; }
     void AdoptExternalState();
@@ -53,6 +55,7 @@ private:
         std::uint64_t revision{};
         bool complete{ true };
         HidHide::FullImageNames activeProfiles;
+        HidHide::FullImageNames unresolvedProfiles;
         HidHide::DeviceInstancePaths activeDevices;
     };
 
@@ -81,6 +84,7 @@ private:
     bool m_OverrideActive{ false };
     size_t m_ActiveProfileCount{};
     HidHide::FullImageNames m_ActiveProfiles;
+    HidHide::FullImageNames m_UnresolvedProfiles;
 
     HidHide::AppProfiles m_SubmittedProfiles;
     bool m_HasSubmittedProfiles{};

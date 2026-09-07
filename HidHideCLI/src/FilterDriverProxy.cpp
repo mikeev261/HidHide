@@ -267,7 +267,7 @@ namespace HidHide
     {
         auto device = ::Device(StringTable(IDS_CONTROL_DEVICE_NAME));
         auto const current = Snapshot(device.get());
-        if (current != expected) throw std::runtime_error("Configuration changed outside this transaction. Refresh and resolve the conflict before retrying");
+        if (current != expected) throw ConfigurationConflict("Configuration changed outside this transaction. Refresh and resolve the conflict before retrying");
         // IOCTLs are not atomic. Disable first, enable last; a failed/partial write
         // does not advance confirmed state and will fail the next expected-state check.
         if (current.active && !desired.active) ::SetActive(device.get(), false);
@@ -409,4 +409,30 @@ namespace HidHide
     _Use_decl_annotations_
     void FilterDriverProxy::AppProfileDelEntry(FullImageName const& path, DeviceInstancePath const& device)
     { auto desired = m_Cache; auto it = desired.profiles.find(path); if (it != desired.profiles.end()) it->second.erase(device); Change(desired); }
+    void FilterDriverProxy::SetBlacklist(DeviceInstancePaths const& expected, DeviceInstancePaths const& value)
+    {
+        if (m_Cache.blacklist != expected) throw ConfigurationConflict("Blacklist view changed; refresh and retry");
+        SetBlacklist(value);
+    }
+    void FilterDriverProxy::SetWhitelist(FullImageNames const& expected, FullImageNames const& value)
+    {
+        if (m_Cache.whitelist != expected) throw ConfigurationConflict("Whitelist view changed; refresh and retry");
+        SetWhitelist(value);
+    }
+    void FilterDriverProxy::SetAppProfiles(AppProfiles const& expected, AppProfiles const& value)
+    {
+        if (m_Cache.profiles != expected) throw ConfigurationConflict("AppProfiles view changed; refresh and retry");
+        SetAppProfiles(value);
+    }
+    void FilterDriverProxy::SetActive(bool const& expected, bool const& value)
+    {
+        if (m_Cache.active != expected) throw ConfigurationConflict("Active view changed; refresh and retry");
+        SetActive(value);
+    }
+    void FilterDriverProxy::SetInverse(bool const& expected, bool const& value)
+    {
+        if (m_Cache.inverse != expected) throw ConfigurationConflict("Inverse view changed; refresh and retry");
+        SetInverse(value);
+    }
+
 }

@@ -6,31 +6,11 @@
 #include "HidHideClientDlg.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "ConfigurationUi.h"
+#include "ActiveStateView.h"
 
 // Define user-message for processing device interface arrivals
 constexpr auto WM_USER_CM_NOTIFICATION_REFRESH{ WM_USER + 1 };
-
-// The actual bit pattern for checking the check-boxes
-constexpr auto LVIS_STATE_CHECKBOX_MASK      { 0x3000 };
-constexpr auto LVIS_STATE_CHECKBOX_UNCHECKED { 0x1000 };
-constexpr auto LVIS_STATE_CHECKBOX_CHECKED   { 0x2000 };
-
-// The icon for a certain state
-enum class ICON_LOCK
-{
-    BLANK,
-    OFF,
-    ON
-};
-
-namespace
-{
-    DWORD CALLBACK OnCmNotificationCallbackStatic(_In_ HCMNOTIFICATION cmNotification, _In_ PVOID context, _In_ CM_NOTIFY_ACTION cmNotifyAction, _In_ PCM_NOTIFY_EVENT_DATA cmNotifyEventData, _In_ DWORD cmNotifyEventDataSize)
-    {
-        TRACE_ALWAYS(L"");
-        return (static_cast<CBlacklistDlg*>(context)->OnCmNotificationCallback(cmNotification, cmNotifyAction, cmNotifyEventData, cmNotifyEventDataSize));
-    }
-}
 
 IMPLEMENT_DYNAMIC(CBlacklistDlg, CDialogEx)
 
@@ -51,9 +31,7 @@ CBlacklistDlg::CBlacklistDlg(CHidHideClientDlg& hidHideClientDlg, CWnd* pParent)
     : CDialogEx(IDD_DIALOG_BLACKLIST, pParent)
     , HidHide::IDropTarget()
     , m_HidHideClientDlg{ hidHideClientDlg }
-    , m_BlacklistItemData{}
     , m_Blacklist{}
-    , m_CmNotificationHandle{}
     , m_LockBlank{}
     , m_LockOff{}
     , m_LockOn{}
@@ -66,34 +44,11 @@ CBlacklistDlg::CBlacklistDlg(CHidHideClientDlg& hidHideClientDlg, CWnd* pParent)
     TRACE_ALWAYS(L"");
 }
 
-CBlacklistDlg::~CBlacklistDlg()
-{
-    TRACE_ALWAYS(L"");
-
-    // Unsubscribe from HID device arrival
-    ::CM_Unregister_Notification(m_CmNotificationHandle);
-}
+CBlacklistDlg::~CBlacklistDlg() = default;
 
 HidHide::FilterDriverProxy& CBlacklistDlg::FilterDriverProxy() noexcept
 {
     return (m_HidHideClientDlg.FilterDriverProxy());
-}
-
-_Use_decl_annotations_
-DWORD CBlacklistDlg::OnCmNotificationCallback(HCMNOTIFICATION cmNotification, CM_NOTIFY_ACTION cmNotifyAction, PCM_NOTIFY_EVENT_DATA cmNotifyEventData, DWORD cmNotifyEventDataSize)
-{
-    UNREFERENCED_PARAMETER(cmNotification);
-    UNREFERENCED_PARAMETER(cmNotifyEventData);
-    UNREFERENCED_PARAMETER(cmNotifyEventDataSize);
-
-    // Only act on new device arrivals
-    if (CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL == cmNotifyAction)
-    {
-        TRACE_ALWAYS(L"");
-        Refresh();
-    }
-
-    return (0);
 }
 
 _Use_decl_annotations_
@@ -122,7 +77,8 @@ BOOL CBlacklistDlg::OnInitDialog()
     // Reflect the current Active state in the check-box
     m_Filter.SetCheck(BST_CHECKED);
     m_Gaming.SetCheck(BST_CHECKED);
-    RefreshEnabledState();
+    // The posted refresh reads configuration after controls are initialized.
+    Refresh();
 
     // Prepare list icons
     if (nullptr == (m_LockBlank = ::LoadIconW(AfxGetApp()->m_hInstance, MAKEINTRESOURCEW(IDI_ICON_BLACKLIST_LOCK_BLANK)))) THROW_WIN32_LAST_ERROR;
@@ -133,10 +89,6 @@ BOOL CBlacklistDlg::OnInitDialog()
     if (-1 == m_ImageList.Add(m_LockOff))   THROW_WIN32(ERROR_INVALID_PARAMETER);
     if (-1 == m_ImageList.Add(m_LockOn))    THROW_WIN32(ERROR_INVALID_PARAMETER);
     m_Blacklist.SetImageList(&m_ImageList, TVSIL_NORMAL);
-
-    // All set ... now subscribe to HID device arrival ... as this may trigger window messages too
-    CM_NOTIFY_FILTER cmNotifyFilter{ sizeof(CM_NOTIFY_FILTER), CM_NOTIFY_FILTER_FLAG_ALL_INTERFACE_CLASSES, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, 0, 0 };
-    if (auto const result{ ::CM_Register_Notification(&cmNotifyFilter, this, &OnCmNotificationCallbackStatic, &m_CmNotificationHandle) }; (CR_SUCCESS != result)) THROW_CONFIGRET(result);
 
     return (TRUE);
 }
@@ -149,182 +101,87 @@ void CBlacklistDlg::OnShowWindow(BOOL bShow, UINT nStatus)
     Refresh();
 }
 
-void CBlacklistDlg::Refresh()
+void CBlacklistDlg::Refresh(bool background)
 {
     TRACE_ALWAYS(L"");
-    PostMessageW(WM_USER_CM_NOTIFICATION_REFRESH, 0, NULL);
+    if (background) m_PendingRefresh.Request(::GetTickCount64());
+    else PostMessageW(WM_USER_CM_NOTIFICATION_REFRESH);
+}
+
+void CBlacklistDlg::RetryPendingRefresh()
+{
+    try
+    {
+        m_PendingRefresh.RunIfDue(::GetTickCount64(), [this] { RefreshDevices(); });
+    }
+    catch (std::runtime_error const&)
+    {
+        m_Refreshing = false;
+        LOGEXC_AND_CONTINUE;
+    }
 }
 
 _Use_decl_annotations_
 LRESULT CBlacklistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
 {
-    RefreshEnabledState();
-    TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
-
-    // As the strings are referenced be sure to delete the list entries first
-    m_Blacklist.UpdateData(FALSE);
-    if (FALSE == m_Blacklist.DeleteAllItems()) THROW_WIN32(ERROR_INVALID_PARAMETER);
-
-    // Get the black-listed devices
-    auto const deviceInstancePathsBlacklisted{ FilterDriverProxy().GetBlacklist() };
-
-    // Get the human interface devices and their associated model information
-    m_BlacklistItemData = { HidHide::HidDevices(false) };
-
-    // Fill the tree
-    for (auto const& topLevelEntry : m_BlacklistItemData)
+    try { RefreshDevices(); }
+    catch (std::runtime_error const& error)
     {
-        // Get the device instance path of its base container id (if present)
-        auto const baseContainerDeviceInstancePath{ (topLevelEntry.second.empty() ? L"" : topLevelEntry.second.at(0).baseContainerDeviceInstancePath) };
-
-        // Is the top-level entry on the black-list ?
-        auto const topLevelEntryBlacklisted
-        {
-            (std::end(deviceInstancePathsBlacklisted) != std::find(std::begin(deviceInstancePathsBlacklisted), std::end(deviceInstancePathsBlacklisted), baseContainerDeviceInstancePath))
-            || std::any_of(std::begin(topLevelEntry.second), std::end(topLevelEntry.second), [&deviceInstancePathsBlacklisted](HidHide::HidDeviceInformation const& value)
-            {
-                return ((!value.xusbDeviceInstancePath.empty()) && (std::end(deviceInstancePathsBlacklisted) != std::find(std::begin(deviceInstancePathsBlacklisted), std::end(deviceInstancePathsBlacklisted), value.xusbDeviceInstancePath)));
-            })
-        };
-
-        // Is any of the child entries on the black-list ?
-        auto const anyChildEntryBlacklisted{ std::end(topLevelEntry.second) != std::find_if(std::begin(topLevelEntry.second), std::end(topLevelEntry.second), [&deviceInstancePathsBlacklisted](HidHide::HidDeviceInformation const& value)
-        {
-            return (std::end(deviceInstancePathsBlacklisted) != std::find(std::begin(deviceInstancePathsBlacklisted), std::end(deviceInstancePathsBlacklisted), value.deviceInstancePath));
-        }) };
-
-        // Are all child entries on the black-list ?
-        auto const allChildEntryBlacklisted{ std::end(topLevelEntry.second) == std::find_if_not(std::begin(topLevelEntry.second), std::end(topLevelEntry.second), [&deviceInstancePathsBlacklisted](HidHide::HidDeviceInformation const& value)
-        {
-            return (std::end(deviceInstancePathsBlacklisted) != std::find(std::begin(deviceInstancePathsBlacklisted), std::end(deviceInstancePathsBlacklisted), value.deviceInstancePath));
-        }) };
-
-        // Apply the filters only when the entry isn't black-listed
-        if ((!topLevelEntryBlacklisted) && (!anyChildEntryBlacklisted))
-        {
-            // Skip the entry when gaming-only is selected and its not a gaming device
-            if ((0 != (m_Gaming.GetCheck() & BST_CHECKED)) && (std::end(topLevelEntry.second) == std::find_if(std::begin(topLevelEntry.second), std::end(topLevelEntry.second), [](HidHide::HidDeviceInformation const& value) { return (value.gamingDevice); })))
-            {
-                continue;
-            }
-            // Skip the entry when present-only is selected and the device isn't present
-            if ((0 != (m_Filter.GetCheck() & BST_CHECKED)) && (std::end(topLevelEntry.second) == std::find_if(std::begin(topLevelEntry.second), std::end(topLevelEntry.second), [](HidHide::HidDeviceInformation const& value) { return (value.present); })))
-            {
-                continue;
-            }
-        }
-
-        // Add the top-level entry
-        TVINSERTSTRUCTW tvInsert;
-        tvInsert.item.mask             = (TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_TEXT | TVIF_STATE);
-        tvInsert.hParent               = nullptr;
-        tvInsert.hInsertAfter          = TVI_LAST;
-        tvInsert.itemex.state          = ((topLevelEntryBlacklisted || allChildEntryBlacklisted) ? LVIS_STATE_CHECKBOX_CHECKED : LVIS_STATE_CHECKBOX_UNCHECKED);
-        tvInsert.itemex.stateMask      = TVIS_USERMASK;
-        tvInsert.itemex.iImage         = static_cast<int>((topLevelEntryBlacklisted || anyChildEntryBlacklisted) ? ICON_LOCK::ON : ICON_LOCK::OFF);
-        tvInsert.itemex.iSelectedImage = static_cast<int>((topLevelEntryBlacklisted || anyChildEntryBlacklisted) ? ICON_LOCK::ON : ICON_LOCK::OFF);
-        tvInsert.item.pszText          = const_cast<LPWSTR>(topLevelEntry.first.c_str());
-        auto const hParent{ m_Blacklist.InsertItem(&tvInsert) };
-        if (nullptr == hParent) THROW_WIN32(ERROR_INVALID_PARAMETER);
-
-        // Add its children
-        for (auto const& child : topLevelEntry.second)
-        {
-            auto const childEntryBlacklisted{ (std::end(deviceInstancePathsBlacklisted) != std::find(std::begin(deviceInstancePathsBlacklisted), std::end(deviceInstancePathsBlacklisted), child.deviceInstancePath)) };
-            tvInsert.hParent               = hParent;
-            tvInsert.itemex.state          = ((topLevelEntryBlacklisted | childEntryBlacklisted) ? LVIS_STATE_CHECKBOX_CHECKED : LVIS_STATE_CHECKBOX_UNCHECKED);
-            tvInsert.itemex.stateMask      = TVIS_USERMASK;
-            tvInsert.itemex.iImage         = static_cast<int>(ICON_LOCK::BLANK);
-            tvInsert.itemex.iSelectedImage = static_cast<int>(ICON_LOCK::BLANK);
-            tvInsert.item.pszText = const_cast<LPWSTR>(child.usage.c_str());
-            auto const hItem{ m_Blacklist.InsertItem(&tvInsert) };
-            if (nullptr == hItem) THROW_WIN32(ERROR_INVALID_PARAMETER);
-            if (FALSE == m_Blacklist.SetItemData(hItem, reinterpret_cast<DWORD_PTR>(&child))) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        }
+        m_Refreshing = false;
+        ReportConfigurationError(error);
     }
+    return 0;
+}
 
-    m_Blacklist.SortChildren(TVI_ROOT);
-    m_Blacklist.SelectItem(m_Blacklist.GetFirstVisibleItem());
-    m_Blacklist.SetFocus();
-    m_Blacklist.UpdateData(TRUE);
-
-    return (0);
+void CBlacklistDlg::RefreshDevices()
+{
+    TRACE_ALWAYS(L"");
+    // Read everything before changing controls, so contention retains the view.
+    auto const deviceInstancePathsBlacklisted{ m_HidHideClientDlg.Baseline() };
+    auto const active{ m_HidHideClientDlg.EffectiveHidingEnabled() };
+    auto devices = HidHide::HidDevices(false);
+    m_Refreshing = true;
+    m_AcknowledgedTree.clear();
+    m_Selector.Build(m_Blacklist, devices, deviceInstancePathsBlacklisted,
+        { 0 != (m_Gaming.GetCheck() & BST_CHECKED), 0 != (m_Filter.GetCheck() & BST_CHECKED), true },
+        DeviceSelectionTree::Presentation::DeviceLocks);
+    m_DisplayedBlacklist = deviceInstancePathsBlacklisted;
+    m_DisplayedActive = active;
+    m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED);
+    AcknowledgeTree();
+    m_Refreshing = false;
+    m_PendingRefresh.Complete();
 }
 
 _Use_decl_annotations_
 void CBlacklistDlg::OnTvnItemChangedTreeBlacklist(NMHDR* pNMHDR, LRESULT* pResult)
+try
 {
     TRACE_ALWAYS(L"");
+    *pResult = 0;
+    if (m_Refreshing) return;
     auto const& pNMTVItemChange{ *reinterpret_cast<NMTVITEMCHANGE*>(pNMHDR) };
 
-    // Filter-out any event that doesn't relate to changes
-    if (auto const key{ (pNMTVItemChange.uStateOld << 16) + pNMTVItemChange.uStateNew }; (0x10022002 != key) && (0x10002000 != key) && (0x10602060 != key) && (0x10622062 != key) && (0x20021002 != key) && (0x20001000 != key) && (0x20601060 != key) && (0x20621062 != key)) return;
-    auto const checked { (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & pNMTVItemChange.uStateNew)) };
-    auto const hParent { m_Blacklist.GetParentItem(pNMTVItemChange.hItem) };
-    auto const topLevel{ (nullptr == hParent) };
-
-    // A top-level change is also applied to all of its children
-    if (topLevel)
-    {
-        if (FALSE == m_Blacklist.SetItemImage(pNMTVItemChange.hItem, static_cast<int>(checked ? ICON_LOCK::ON : ICON_LOCK::OFF), static_cast<int>(checked ? ICON_LOCK::ON : ICON_LOCK::OFF))) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        for (auto hChild{ m_Blacklist.GetChildItem(pNMTVItemChange.hItem) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild))
-        {
-            if (FALSE == m_Blacklist.SetItemState(hChild, ((checked ? LVIS_STATE_CHECKBOX_CHECKED : LVIS_STATE_CHECKBOX_UNCHECKED) | (~LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hChild, TVIS_USERMASK))), TVIS_USERMASK)) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        }
-    }
-
-    // When the child-level is checked and all other child-levels are also checked then check the top-level parent
-    if ((!topLevel) && (checked))
-    {
-        auto allChecked{ true };
-        for (auto hChild{ m_Blacklist.GetChildItem(hParent) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild))
-        {
-            if (LVIS_STATE_CHECKBOX_CHECKED != (LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hChild, TVIS_USERMASK)))
-            {
-                allChecked = false;
-                break;
-            }
-        }
-        if ((allChecked) && (FALSE == m_Blacklist.SetItemImage(hParent, static_cast<int>(ICON_LOCK::ON), static_cast<int>(ICON_LOCK::ON)))) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        if ((allChecked) && (FALSE == m_Blacklist.SetItemState(hParent, (LVIS_STATE_CHECKBOX_CHECKED | (~LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hParent, TVIS_USERMASK))), TVIS_USERMASK))) THROW_WIN32(ERROR_INVALID_PARAMETER);
-    }
-
-    // When the child-level is unchecked then uncheck the top-level parent
-    if ((!topLevel) && (!checked))
-    {
-        if (FALSE == m_Blacklist.SetItemImage(hParent, static_cast<int>(ICON_LOCK::OFF), static_cast<int>(ICON_LOCK::OFF))) THROW_WIN32(ERROR_INVALID_PARAMETER);
-        if (FALSE == m_Blacklist.SetItemState(hParent, (LVIS_STATE_CHECKBOX_UNCHECKED | (~LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hParent, TVIS_USERMASK))), TVIS_USERMASK)) THROW_WIN32(ERROR_INVALID_PARAMETER);
-    }
-
-    // Construct the new black-list using the same physical-device expansion shared by App Profiles.
-    auto deviceInstancePaths = FilterDriverProxy().GetBlacklist();
-    for (auto hItem{ m_Blacklist.GetRootItem() }; (nullptr != hItem); hItem = m_Blacklist.GetNextItem(hItem, TVGN_NEXT))
-    {
-        std::vector<HidHide::HidDeviceInformation> devices;
-        HidHide::DeviceInstancePaths displayedHidPaths;
-        HidHide::DeviceInstancePaths selectedHidPaths;
-        for (auto hChild{ m_Blacklist.GetChildItem(hItem) }; (nullptr != hChild); hChild = m_Blacklist.GetNextSiblingItem(hChild))
-        {
-            auto const childItemData{ reinterpret_cast<HidHide::HidDeviceInformation*>(m_Blacklist.GetItemData(hChild)) };
-            if (nullptr == childItemData) THROW_WIN32(ERROR_INVALID_PARAMETER);
-            devices.emplace_back(*childItemData);
-            displayedHidPaths.emplace(childItemData->deviceInstancePath);
-
-            if (LVIS_STATE_CHECKBOX_CHECKED == (LVIS_STATE_CHECKBOX_MASK & m_Blacklist.GetItemState(hChild, TVIS_USERMASK)))
-                selectedHidPaths.emplace(childItemData->deviceInstancePath);
-        }
-
-        for (auto const& path : HidHide::HidDevicePathsForSelection(devices, displayedHidPaths)) deviceInstancePaths.erase(path);
-        auto const expanded{ HidHide::HidDevicePathsForSelection(devices, selectedHidPaths) };
-        deviceInstancePaths.insert(expanded.begin(), expanded.end());
-    }
+    if ((pNMTVItemChange.uStateOld & TVIS_STATEIMAGEMASK) == (pNMTVItemChange.uStateNew & TVIS_STATEIMAGEMASK)) return;
+    struct RefreshGuard { bool& flag; RefreshGuard(bool& value) : flag(value) { flag = true; } ~RefreshGuard() { flag = false; } } guard(m_Refreshing);
+    if (!m_Selector.Change(m_Blacklist, pNMTVItemChange.hItem)) return;
+    auto const deviceInstancePaths = m_Selector.Selection(m_Blacklist, m_DisplayedBlacklist);
 
     // Forward the new selection to the filter driver
-    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetBlacklist(deviceInstancePaths); });
+    m_HidHideClientDlg.EditBaseline(m_DisplayedBlacklist, deviceInstancePaths);
+    m_DisplayedBlacklist = deviceInstancePaths;
+    AcknowledgeTree();
     *pResult = 0;
 }
+catch (std::runtime_error const& error)
+{
+    RestoreTree();
+    ReportConfigurationError(error, true);
+    Refresh();
+}
+
 
 void CBlacklistDlg::OnBnClickedCheckFilter()
 {
@@ -338,13 +195,58 @@ void CBlacklistDlg::OnBnClickedCheckGaming()
     Refresh();
 }
 
-void CBlacklistDlg::OnBnClickedCheckEnable()
+void CBlacklistDlg::SynchronizeActiveState()
 {
-    TRACE_ALWAYS(L"");
-    m_HidHideClientDlg.ApplyConfigurationEdit([&] { FilterDriverProxy().SetActive(0 != (m_Enable.GetCheck() & BST_CHECKED)); });
+    if (!m_Enable.GetSafeHwnd()) return;
+    bool const active = m_HidHideClientDlg.EffectiveHidingEnabled();
+    if (active == m_DisplayedActive) return;
+    m_Enable.SetCheck(active ? BST_CHECKED : BST_UNCHECKED);
+    m_DisplayedActive = active;
 }
 
-void CBlacklistDlg::RefreshEnabledState()
+void CBlacklistDlg::OnBnClickedCheckEnable()
+try
 {
-    m_Enable.SetCheck(m_HidHideClientDlg.EffectiveHidingEnabled() ? BST_CHECKED : BST_UNCHECKED);
+    TRACE_ALWAYS(L"");
+    bool const active = 0 != (m_Enable.GetCheck() & BST_CHECKED);
+    m_HidHideClientDlg.SetEnabled(m_DisplayedActive, active);
+    m_DisplayedActive = active;
+}
+catch (std::runtime_error const& error)
+{
+    m_Enable.SetCheck(m_DisplayedActive ? BST_CHECKED : BST_UNCHECKED);
+    m_Refreshing = false;
+    ReportConfigurationError(error, true);
+    Refresh();
+}
+
+// Retain the rendered control state, including parent icons and composite checks.
+// Rollback must remain available even when configuration reads keep failing.
+void CBlacklistDlg::AcknowledgeTree()
+{
+    m_Selector.Acknowledge();
+    std::vector<TreeState> acknowledged;
+    auto capture = [this, &acknowledged](HTREEITEM item)
+    {
+        TreeState state{ item, m_Blacklist.GetItemState(item, TVIS_STATEIMAGEMASK), 0, 0 };
+        m_Blacklist.GetItemImage(item, state.image, state.selectedImage);
+        acknowledged.push_back(state);
+    };
+    for (auto parent = m_Blacklist.GetRootItem(); parent; parent = m_Blacklist.GetNextSiblingItem(parent))
+    {
+        capture(parent);
+        for (auto child = m_Blacklist.GetChildItem(parent); child; child = m_Blacklist.GetNextSiblingItem(child)) capture(child);
+    }
+    m_AcknowledgedTree = std::move(acknowledged);
+}
+
+void CBlacklistDlg::RestoreTree()
+{
+    m_Refreshing = true;
+    for (auto const& state : m_AcknowledgedTree)
+    {
+        m_Blacklist.SetItemState(state.item, state.state, TVIS_STATEIMAGEMASK);
+        m_Blacklist.SetItemImage(state.item, state.image, state.selectedImage);
+    }
+    m_Refreshing = false;
 }

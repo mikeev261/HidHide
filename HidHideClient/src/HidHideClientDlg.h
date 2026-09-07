@@ -27,7 +27,10 @@ public:
     // Allow child dialogs access to the shared filter driver proxy
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
     bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
-    bool ApplyConfigurationEdit(std::function<void()> const& edit);
+    bool ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept;
+    HidHide::DeviceInstancePaths Baseline();
+    void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
+    void SetEnabled(bool displayed, bool requested);
     bool EffectiveHidingEnabled() const;
 
 private:
@@ -103,6 +106,7 @@ private:
     CWhitelistDlg   m_WhitelistDlg;
     CAppProfilesDlg m_AppProfilesDlg;
 
+    HCMNOTIFICATION m_DeviceNotification{};
     NOTIFYICONDATAW m_NotifyIcon{};
     bool m_StartHidden{};
     bool m_Exiting{};
@@ -124,6 +128,7 @@ private:
     afx_msg void OnTimer(_In_ UINT_PTR nIDEvent);
     afx_msg void OnClose();
     afx_msg void OnDestroy();
+    afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
     afx_msg LRESULT OnTrayIcon(_In_ WPARAM wParam, _In_ LPARAM lParam);
     afx_msg LRESULT OnHideAfterStart(_In_ WPARAM wParam, _In_ LPARAM lParam);
     afx_msg LRESULT OnShowManager(_In_ WPARAM wParam, _In_ LPARAM lParam);

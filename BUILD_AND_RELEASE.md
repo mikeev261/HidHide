@@ -21,13 +21,15 @@ The MSI builder consumes a flat per-arch staging directory; see [INSTALL_LAYOUT.
 
 ## Local signing
 
-Download CI artifacts for a tag/version and sign the MSI files (AppVeyor API token required):
+Use a directory containing the two CI-built companion executables. The release
+script signs copies before packaging, then signs the resulting MSI:
 
 ```powershell
-.\release.ps1 -BuildVersion v1.2.3 -Token <appveyor_token>
+.\release.ps1 -Staging ./artifacts/staging/x64 -Platform x64 -CertName '<your certificate subject>'
 ```
 
-Default certificate subject is `Nefarius Software Solutions` (override with `-CertName` if needed).
+Use a fresh output directory for each release (`-Out`). Specify `-NoSigning` for
+an unsigned local package. There is no default certificate or upstream publisher.
 
 ## Companion build and test pipeline (package 01)
 
@@ -41,9 +43,8 @@ Run from the repository root in a Visual Studio developer shell:
 The default target is `UnitTest`: it restores Google Test, explicitly rebuilds
 GUI, CLI, and tests, and executes tests on a compatible Windows host. `Ci` adds
 companion MSI packaging. Neither path builds the driver or attestation CAB.
-`CompileDriver` and `BuildCab` are opt-in driver-development targets requiring
-WDK and its corresponding toolset. The orphaned Watchdog solution mappings
-were removed; Watchdog is not part of the companion payload.
+The inherited driver, CAB, test-signing, and Watchdog build paths have been
+removed. The retained driver sources are archival; see [MAINTENANCE.md](MAINTENANCE.md).
 
 MSBuild must be on PATH, or pass `--compiler-path <absolute MSBuild.exe path>`.
 This also avoids NUKE 9's discovery limitation with Visual Studio 18. Build logs
@@ -52,7 +53,7 @@ are in `artifacts/logs/<architecture>/*.binlog`; Google Test XML is in
 the PowerShell entrypoint, and the AppVeyor build-script step. CI validates all
 branches and PRs, uploads XML results, and retains logs. Publication is separate.
 
-Required tools: Visual Studio with v145 C++ x64 and ARM64 build tools, matching
+Required tools for x64: Visual Studio with v145 C++ x64 build tools, matching
 MFC/ATL (including Spectre libraries used by these projects), Windows SDK,
 and .NET SDK compatible with `global.json`. Installer builds additionally use
 .NET Framework 4.8 targeting tools, WixSharp 2.13.0, WiX CLI 5.0.2 and its UI
@@ -65,6 +66,6 @@ Clean verification uses a fresh source checkout (or `git archive` expanded into
 an empty directory with the reviewed changes applied). Change directory into
 that checkout before invoking `build.ps1`; NUKE locates its root from the current
 directory. Do not copy `bin`, `obj`, `packages`, staging, or installer outputs.
-Run the two commands above. To verify failure propagation, add an intentionally
+Run the x64 UnitTest command above. To verify failure propagation, add an intentionally
 failing Google Test only in the disposable checkout, rerun `UnitTest`, and
 confirm a nonzero exit. Never commit that injected failure.

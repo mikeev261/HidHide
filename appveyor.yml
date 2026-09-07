@@ -7,7 +7,6 @@ test: off
 platform:
 - x64
 install:
-- cmd: git submodule update --init --recursive
 - ps: |
     $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
     $env:HIDHIDE_MSBUILD = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild/**/Bin/MSBuild.exe | Select-Object -First 1

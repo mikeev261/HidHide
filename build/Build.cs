@@ -27,6 +27,15 @@ class Build : NukeBuild
     [Parameter("Optional MSBuild.exe path when NUKE cannot discover the installed Visual Studio version.")]
     readonly string? CompilerPath;
 
+    [Parameter("Verified unchanged x64 driver payload directory (or HIDHIDE_DRIVER_PAYLOAD).")]
+    readonly string? DriverPayload = Environment.GetEnvironmentVariable("HIDHIDE_DRIVER_PAYLOAD");
+
+    [Parameter("Verified upstream recovery EXE (or HIDHIDE_UPSTREAM_RECOVERY).")]
+    readonly string? UpstreamRecovery = Environment.GetEnvironmentVariable("HIDHIDE_UPSTREAM_RECOVERY");
+
+    [Parameter("Windows SDK signtool.exe for kernel catalog verification.")]
+    readonly string? SignTool;
+
     /// <summary>
     /// Explicit repo-root solution path so CI does not depend on NUKE solution injection / .nuke parameters.
     /// </summary>
@@ -42,11 +51,9 @@ class Build : NukeBuild
         .Before(Restore)
         .Executes(() =>
         {
-            // AppVeyor runs `build.ps1` once per platform; clearing all of `artifacts/` would delete the other arch's MSI.
-            if (IsLocalBuild)
-                EnsureCleanDirectory(ArtifactsDirectory);
-            else
-                EnsureCleanDirectory(StagingRoot);
+            // artifacts also holds irreplaceable lifecycle journals and recovery packages.
+            // Clean only this build's disposable staging directory.
+            EnsureCleanDirectory(StageDir);
         });
 
     Target Restore => _ => _
@@ -87,51 +94,76 @@ class Build : NukeBuild
         {
             EnsureCleanDirectory(StageDir);
 
-            // The companion package deliberately excludes the kernel driver and
-            // installs alongside an existing Microsoft-signed HidHide release.
+            // Compile only user-mode code. The separately verified signed driver is
+            // supplied to the packaging stage unchanged.
             CopyFileToDirectory(OutputRoot / "HidHideClient.exe", StageDir, FileExistsPolicy.Fail);
             CopyFileToDirectory(OutputRoot / "HidHideCLI.exe", StageDir, FileExistsPolicy.Fail);
         });
 
-    Target BuildMsi => _ => _
+    Target InstallerTests => _ => _
+        .Executes(() =>
+        {
+            foreach (var project in new[] { "Installer.Tests", "Installer.Driver.Tests", "Installer.Controller.Tests", "Installer.Bootstrapper.Tests" })
+                ProcessTasks.StartProcess("dotnet", $"run --project \"{RootDirectory / project}\" -c Release", RootDirectory)
+                    .AssertZeroExitCode();
+            string evidenceArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "TestReleaseEvidence.ps1"}\"";
+            ProcessTasks.StartProcess("pwsh.exe", evidenceArguments, RootDirectory).AssertZeroExitCode();
+        });
+
+    Target BuildSetup => _ => _
         .DependsOn(StageInstallerPayload)
         .Executes(() =>
         {
-            // Run the WixSharp installer builder; on CI this runs on Windows.
-            AbsolutePath installerProject = RootDirectory / "Installer" / "HidHide.Installer.csproj";
-            AbsolutePath outDir = ArtifactsDirectory / "msi" / Platform;
-            EnsureExistingDirectory(StageDir);
-            EnsureExistingDirectory(outDir);
-
-            var args =
-                $"run --project \"{installerProject}\" -c {Configuration} -- " +
-                $"--staging \"{StageDir}\" --out \"{outDir}\" --platform {Platform}";
-
-            ProcessTasks.StartProcess("dotnet", args, RootDirectory)
-                .AssertZeroExitCode();
-
-            // Normalize output name so release scripts can rely on stable filenames.
-            var builtMsi = Directory.GetFiles(outDir, "*.msi");
-            if (builtMsi.Length != 1)
-                throw new Exception($"Expected exactly one MSI in {outDir}, found {builtMsi.Length}.");
-
-            var targetName = $"HidHideAppProfiles_{Platform}.msi";
-            var targetPath = Path.Combine(outDir, targetName);
-            if (File.Exists(targetPath))
-                File.Delete(targetPath);
-            File.Move(builtMsi[0], targetPath);
+            if (!Platform.Equals("x64", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Unified setup supports only x64; ARM64 applications may be compiled separately.");
+            var signingTool = ResolveSignTool();
+            string? driverPayload = DriverPayload?.Trim('"');
+            string? upstreamRecovery = UpstreamRecovery?.Trim('"');
+            if (string.IsNullOrWhiteSpace(driverPayload) || string.IsNullOrWhiteSpace(upstreamRecovery))
+            {
+                var acquired = ArtifactsDirectory / "driver-payload" / Guid.NewGuid().ToString("N");
+                var archiveCache = ArtifactsDirectory / "driver-cache";
+                string acquireArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "AcquireSignedDriver.ps1"}\" " +
+                    $"-Out \"{acquired}\" -Cache \"{archiveCache}\" -SignTool \"{signingTool}\"";
+                ProcessTasks.StartProcess("pwsh.exe", acquireArguments, RootDirectory).AssertZeroExitCode();
+                if (string.IsNullOrWhiteSpace(driverPayload)) driverPayload = acquired;
+                // The acquisition helper verifies this manifest and archive before returning.
+                using var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(RootDirectory / "build" / "driver-payload.json"));
+                if (string.IsNullOrWhiteSpace(upstreamRecovery)) upstreamRecovery = archiveCache / manifest.RootElement.GetProperty("archiveName").GetString()!;
+            }
+            var outDir = ArtifactsDirectory / "setup" / ("x64-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+            string setupArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "BuildUnifiedSetup.ps1"}\" " +
+                $"-Staging \"{StageDir}\" -DriverPayload \"{driverPayload}\" -UpstreamRecovery \"{upstreamRecovery}\" " +
+                $"-SignTool \"{signingTool}\" -Out \"{outDir}\"";
+            ProcessTasks.StartProcess("pwsh.exe", setupArguments, RootDirectory).AssertZeroExitCode();
+            string verificationArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "TestUnifiedPreview.ps1"}\" -Msi \"{outDir / "msi" / "HidHide.Unified.Preview.msi"}\"";
+            ProcessTasks.StartProcess("pwsh.exe", verificationArguments, RootDirectory).AssertZeroExitCode();
         });
 
     Target Ci => _ => _
-        .DependsOn(UnitTest)
-        .DependsOn(BuildMsi);
+        .DependsOn(UnitTest, InstallerTests, BuildSetup);
+
+    string ResolveSignTool()
+    {
+        if (!string.IsNullOrWhiteSpace(SignTool)) return SignTool.Trim('"');
+        var kits = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Windows Kits", "10", "bin");
+        if (Directory.Exists(kits))
+        {
+            var tool = Directory.GetDirectories(kits)
+                .Select(path => new { Path = path, Version = Version.TryParse(Path.GetFileName(path), out var version) ? version : new Version(0, 0) })
+                .OrderByDescending(item => item.Version)
+                .Select(item => Path.Combine(item.Path, "x64", "signtool.exe")).FirstOrDefault(File.Exists);
+            if (tool != null) return tool;
+        }
+        return ToolPathResolver.GetPathExecutable("signtool.exe");
+    }
 
     void BuildProject(string project)
     {
         ParsePlatform(Platform);
         var logs = ArtifactsDirectory / "logs" / Platform;
         EnsureExistingDirectory(logs);
-        var compiler = CompilerPath ?? ToolPathResolver.GetPathExecutable("MSBuild.exe");
+        var compiler = ResolveCompiler();
         ProcessTasks.StartProcess(compiler,
             $"\"{RootDirectory / project / (project + ".vcxproj")}\" /t:Rebuild " +
             $"/p:Configuration=\"{Configuration}\" /p:Platform={Platform} " +
@@ -140,6 +172,21 @@ class Build : NukeBuild
     }
 
     public static int Main() => Execute<Build>(x => x.UnitTest);
+
+    string ResolveCompiler()
+    {
+        if (!string.IsNullOrWhiteSpace(CompilerPath)) return CompilerPath.Trim('"');
+        var vswhere = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft Visual Studio", "Installer", "vswhere.exe");
+        if (File.Exists(vswhere))
+        {
+            var result = ProcessTasks.StartProcess(vswhere,
+                "-latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\MSBuild.exe", logOutput: false)
+                .AssertZeroExitCode();
+            var discovered = result.Output.Select(line => line.Text.Trim()).FirstOrDefault(File.Exists);
+            if (discovered != null) return discovered;
+        }
+        return ToolPathResolver.GetPathExecutable("MSBuild.exe");
+    }
 
     /// <summary>Downloads and extracts the Microsoft Google Test NuGet package if missing (ignored by git under /packages).</summary>
     void EnsureGoogleTestNuGetPackage()

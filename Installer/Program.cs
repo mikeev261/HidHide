@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using IOFile = System.IO.File;
 using WixSharp;
 
@@ -28,6 +27,15 @@ public static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--inspect-installed")
+            {
+                var version = ProductContract.ReadVersion(Path.Combine(AppContext.BaseDirectory, "ProductVersion.props"));
+                foreach (var product in InstalledProducts.Detect(version))
+                    Console.WriteLine($"{product.Family:B} | {product.Product:B} | {product.Version} | {product.Operation} | {product.CachedPackage}");
+                foreach (var deviceClass in DriverFilters.Classes)
+                    Console.WriteLine($"UpperFilters {deviceClass:B}: {string.Join(", ", DriverFilters.Read(deviceClass))}");
+                return 0;
+            }
             var options = Options.Parse(args);
             options.Validate();
 
@@ -35,9 +43,9 @@ public static class Program
             if (!IOFile.Exists(licensePath))
                 throw new FileNotFoundException($"License file not found: {licensePath}");
 
-            string installRel = @"%ProgramFiles64Folder%\HidHide App Profiles";
+            string installRel = options.Unified ? @"%ProgramFiles64Folder%\HidHide" : @"%ProgramFiles64Folder%\HidHide App Profiles";
             // Must be a root-level Dir sibling of the install tree (WiX 5 / WIX0094); see WixSharp #1727, #1855.
-            const string startMenuRel = @"%ProgramMenu%\HidHide App Profiles";
+            string startMenuRel = options.Unified ? @"%ProgramMenu%\HidHide" : @"%ProgramMenu%\HidHide App Profiles";
             string sd = options.StagingDir;
             var installDir = new Dir(
                 installRel,
@@ -50,7 +58,7 @@ public static class Program
             var startMenuDir = new Dir(
                 startMenuRel,
                 new ExeFileShortcut(
-                    "HidHide App Profiles",
+                    options.Unified ? ProductContract.Name : "HidHide App Profiles",
                     @"[INSTALLDIR]HidHideClient.exe",
                     "")
                 {
@@ -74,10 +82,12 @@ public static class Program
             };
 
             project.ControlPanelInfo.Manufacturer = Manufacturer;
+            if (options.Unified) UnifiedPreview.Configure(project, installDir, options.DriverPayload);
 
             // Align with WiX 5.x + WixToolset.UI.wixext/5.0.x; WiX 6 defaults are not compatible with WixSharp + WixUI without tweaks.
             WixExtension.UI.PreferredVersion = "5.0.2";
 
+            ReleaseSigning.Configure(project);
             string msiPath = project.BuildMsi();
             Console.WriteLine(msiPath);
             return 0;
@@ -92,38 +102,12 @@ public static class Program
 
     static Version ReadProductVersion(string clientExe)
     {
-        if (!IOFile.Exists(clientExe))
-            return new Version(1, 0, 0, 0);
+        var version = ProductContract.ReadVersion(Path.Combine(AppContext.BaseDirectory, "ProductVersion.props"));
+        if (!IOFile.Exists(clientExe)) throw new FileNotFoundException("Missing versioned client", clientExe);
         var info = FileVersionInfo.GetVersionInfo(clientExe);
-        string? raw = info.ProductVersion ?? info.FileVersion;
-        return TryParseVersion(raw, out Version? v) && v is not null ? v : new Version(1, 0, 0, 0);
-    }
-
-    static bool TryParseVersion(string? raw, out Version? version)
-    {
-        version = null;
-        if (raw is null || string.IsNullOrWhiteSpace(raw))
-            return false;
-        string numeric = raw.Split(new[] { '+' }, 2, StringSplitOptions.None)[0]
-            .Split(new[] { '-' }, 2, StringSplitOptions.None)[0].Trim();
-        string[] parts = numeric.Split('.');
-        try
-        {
-            int major = parts.Length > 0 ? int.Parse(parts[0], CultureInfo.InvariantCulture) : 0;
-            int minor = parts.Length > 1 ? int.Parse(parts[1], CultureInfo.InvariantCulture) : 0;
-            int build = parts.Length > 2 ? int.Parse(parts[2], CultureInfo.InvariantCulture) : 0;
-            int revision = parts.Length > 3 ? int.Parse(parts[3], CultureInfo.InvariantCulture) : 0;
-            version = new Version(major, minor, build, revision);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        if (ProductContract.ParseVersion(info.ProductVersion ?? "") != version || ProductContract.ParseVersion(info.FileVersion ?? "") != version)
+            throw new InvalidDataException("Staged executable version disagrees with ProductVersion.props.");
+        return version;
     }
 
     sealed class Options
@@ -131,6 +115,8 @@ public static class Program
         public string StagingDir { get; }
         public string OutputDir { get; }
         public Platform Platform { get; }
+        public bool Unified { get; private set; }
+        public string DriverPayload { get; private set; } = "";
 
         Options(string stagingDir, string outputDir, Platform platform)
         {
@@ -145,6 +131,8 @@ public static class Program
             string staging = Path.GetFullPath(Path.Combine(cwd, "staging"));
             string output = Path.GetFullPath(Path.Combine(cwd, "msi-out"));
             string arch = "x64";
+            bool unified = false;
+            string driverPayload = "";
 
             ApplyEnvironmentOverrides(ref staging, ref output);
 
@@ -157,6 +145,8 @@ public static class Program
                     output = RequirePath(args, ref i, "out");
                 else if (a is "--platform" or "-p")
                     arch = RequireArg(args, ref i, "platform");
+                else if (a == "--unified-preview") unified = true;
+                else if (a == "--driver-payload") driverPayload = RequirePath(args, ref i, "driver-payload");
                 else if (a is "--help" or "-h")
                     PrintHelp();
                 else
@@ -175,7 +165,7 @@ public static class Program
             return new Options(
                 staging,
                 output,
-                platform);
+                platform) { Unified = unified, DriverPayload = driverPayload };
         }
 
         static void ApplyEnvironmentOverrides(ref string staging, ref string output)
@@ -215,6 +205,8 @@ public static class Program
                   --staging, -s   Flat folder with all payload files (see INSTALL_LAYOUT.md)
                   --out, -o       MSI output directory
                   --platform, -p  x64 | ARM64 (default: x64)
+                  --unified-preview Build the guarded private MSI development preview
+                  --driver-payload Verified INF/SYS/CAT/license folder for the preview
 
                 Environment (optional):
                   HIDHIDE_INSTALLER_STAGING, HIDHIDE_INSTALLER_OUT
@@ -230,6 +222,9 @@ public static class Program
 
         public void Validate()
         {
+            if (Unified && (Platform != Platform.x64 || string.IsNullOrEmpty(DriverPayload)))
+                throw new ArgumentException("Unified preview requires x64 and --driver-payload pointing to the verified signed package.");
+            if (Unified) HidHide.DriverSetup.Payload.Verify(DriverPayload);
             if (!Directory.Exists(StagingDir))
                 throw new DirectoryNotFoundException($"Staging directory not found: {StagingDir}");
 
@@ -238,6 +233,7 @@ public static class Program
                 string p = Path.Combine(StagingDir, name);
                 if (!IOFile.Exists(p))
                     throw new FileNotFoundException($"Staging payload incomplete; missing: {p}");
+                ReadProductVersion(p);
             }
 
             Directory.CreateDirectory(OutputDir);

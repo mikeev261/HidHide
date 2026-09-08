@@ -179,6 +179,8 @@ void CProfileManager::StopWorker() noexcept
 
 void CProfileManager::Tick()
 {
+    if (HidHide::Maintenance::Active()) { m_Status = L"Setup is preparing maintenance; profile monitoring is suspended"; return; }
+    HidHide::Maintenance::Admission admission;
     Observe();
     if (m_Conflict) return;
     m_FilterDriverProxy.Refresh();
@@ -283,6 +285,16 @@ void CProfileManager::ExitSafely()
     if (m_OverrideActive || m_JournalPending) RestoreBaseline();
 }
 
+HidHide::Configuration CProfileManager::PrepareMaintenance()
+{
+    if (!HidHide::Maintenance::Active()) throw std::runtime_error("A maintenance session must hold the barrier before requesting shutdown");
+    Observe();
+    ExitSafely(); // Preserves the persisted pause preference; refuses conflicts.
+    auto const confirmed = HidHide::FilterDriverProxy::ReadDriverConfiguration();
+    if (confirmed != m_Baseline) throw std::runtime_error("Baseline restoration was not confirmed; maintenance refused");
+    return confirmed;
+}
+
 void CProfileManager::Observe()
 {
     auto current = HidHide::FilterDriverProxy::ReadDriverConfiguration();
@@ -299,12 +311,14 @@ void CProfileManager::Observe()
 
 HidHide::Configuration CProfileManager::ReadUserConfiguration()
 {
+    HidHide::Maintenance::Admission admission;
     Observe();
     return m_Baseline;
 }
 
 void CProfileManager::CommitUserConfiguration(HidHide::Configuration const& expected, HidHide::Configuration const& desired, bool disable)
 {
+    HidHide::Maintenance::Admission admission;
     Observe();
     if (m_Conflict) throw std::runtime_error("Profile ownership conflict. Accept current driver settings from the manager tray menu before editing");
     if (expected != m_Baseline) throw HidHide::ConfigurationConflict("Settings changed since this command started. Refresh and retry");
@@ -349,6 +363,7 @@ void CProfileManager::RestoreBaseline()
 
 void CProfileManager::AdoptExternalState()
 {
+    HidHide::Maintenance::Admission admission;
     // Explicit conflict resolution: preserve the actual driver state, discard the
     // obsolete restoration claim, and require a separate resume action.
     auto current = HidHide::FilterDriverProxy::ReadDriverConfiguration();
@@ -363,6 +378,7 @@ void CProfileManager::AdoptExternalState()
 
 void CProfileManager::Resume()
 {
+    HidHide::Maintenance::Admission admission;
     Observe();
     if (m_Conflict) throw std::runtime_error("Resolve the ownership conflict before resuming profiles");
     WritePaused(false);
@@ -375,6 +391,7 @@ void CProfileManager::Resume()
 
 void CProfileManager::Pause()
 {
+    HidHide::Maintenance::Admission admission;
     Observe();
     if (m_Conflict) throw std::runtime_error("Resolve the ownership conflict before restoring the baseline");
     WritePaused(true); m_Suspended = true;

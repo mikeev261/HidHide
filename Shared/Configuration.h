@@ -47,7 +47,7 @@ namespace HidHide
         constexpr std::uint32_t Version = 1;
         constexpr std::size_t MaxBytes = 1024 * 1024;
         constexpr std::uint32_t MaxEntries = 4096;
-        enum class Command : std::uint32_t { Read = 1, Commit = 2 };
+        enum class Command : std::uint32_t { Read = 1, Commit = 2, PrepareMaintenance = 3 };
         struct Writer
         {
             std::vector<std::uint8_t> data;

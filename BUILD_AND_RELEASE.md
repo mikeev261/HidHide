@@ -1,71 +1,37 @@
-# Build and release (maintainers)
+# Build and release
 
-The root `README.md` is reserved for end-user documentation. Maintainer notes for the BthPS3-style pipeline live here.
+The supported package is one unified Windows 11 x64 Burn EXE. Public release is
+not yet validated; see docs/release-readiness.md. Kernel code is never built.
 
-## Flow
-
-- **CI (AppVeyor)** produces unsigned user-mode companion installers: `HidHideAppProfiles_x64.msi` and `HidHideAppProfiles_ARM64.msi`.
-- The companion installer never packages or replaces the HidHide kernel driver. Install an official Microsoft-signed HidHide release first.
-- **Local** maintainer machines may Authenticode-sign the MSI and user-mode executables before publishing; this is independent of Secure Boot kernel signing.
-
-## CI build entrypoint
+Prerequisites: Visual Studio C++/MFC x64 tools, Windows SDK (including signtool),
+.NET SDK, PowerShell 7 (pwsh), WiX 5.0.2 CLI and matching UI extension. No WDK or ARM64 tools required.
 
 ```powershell
-.\build.ps1 Ci --configuration Release --platform x64
-.\build.ps1 Ci --configuration Release --platform ARM64
+.\build.ps1 Ci --configuration Release --platform x64 --compiler-path "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe"
 ```
 
-## Installer payload
+Ci builds applications and tests, executes native/managed tests, acquires/verifies
+the pinned signed driver and produces the unified bundle. Use --driver-payload,
+--upstream-recovery and --sign-tool for explicit local verified inputs/tool paths.
+HIDHIDE_DRIVER_PAYLOAD and HIDHIDE_UPSTREAM_RECOVERY are supported equivalents.
+Keep all recovery evidence in artifacts; never clear the entire directory.
 
-The MSI builder consumes a flat per-arch staging directory; see [INSTALL_LAYOUT.md](INSTALL_LAYOUT.md).
-
-## Local signing
-
-Use a directory containing the two CI-built companion executables. The release
-script signs copies before packaging, then signs the resulting MSI:
+Release uses a new output directory and already-built version-consistent apps:
 
 ```powershell
-.\release.ps1 -Staging ./artifacts/staging/x64 -Platform x64 -CertName '<your certificate subject>'
+.\release.ps1 -Staging .\bin\Release\x64 -DriverPayload .\artifacts\unified-driver-verified -UpstreamRecovery .\artifacts\unified-empty-cache\HidHide_1.5.230_x64.exe -Companion1Recovery <full-companion-1-msi> -Companion99Recovery <full-companion-99-msi> -Out .\artifacts\release-candidate -NoSigning -SignTool <signtool.exe>
 ```
 
-Use a fresh output directory for each release (`-Out`). Specify `-NoSigning` for
-an unsigned local package. There is no default certificate or upstream publisher.
+The current release decision is explicitly unsigned owned setup/application code.
+This never means unsigned kernel code: catalog trust/membership and exact driver
+hashes are mandatory. Optional signing omits -NoSigning and supplies -CertName.
+Only owned code is signed; the upstream driver is never re-signed or regenerated.
+The pipeline signs owned code before packaging, then MSI and the detached Burn
+engine/final bundle using WiX's signing sequence. No upload happens automatically.
 
-## Companion build and test pipeline (package 01)
+Inspect release-manifest.json, logs and test XML, then validate the exact final
+artifact. A successful build does not close native upgrade, recovery, offline,
+physical-device or alternate-user acceptance gates. Dirty source evidence must
+not be represented as an exact clean source commit.
 
-Run from the repository root in a Visual Studio developer shell:
-
-```powershell
-./build.ps1 UnitTest --configuration Release --platform x64
-./build.ps1 Compile --configuration Release --platform ARM64
-```
-
-The default target is `UnitTest`: it restores Google Test, explicitly rebuilds
-GUI, CLI, and tests, and executes tests on a compatible Windows host. `Ci` adds
-companion MSI packaging. Neither path builds the driver or attestation CAB.
-The inherited driver, CAB, test-signing, and Watchdog build paths have been
-removed. The retained driver sources are archival; see [MAINTENANCE.md](MAINTENANCE.md).
-
-MSBuild must be on PATH, or pass `--compiler-path <absolute MSBuild.exe path>`.
-This also avoids NUKE 9's discovery limitation with Visual Studio 18. Build logs
-are in `artifacts/logs/<architecture>/*.binlog`; Google Test XML is in
-`artifacts/tests/<architecture>/results.xml`. A nonzero test exit fails NUKE,
-the PowerShell entrypoint, and the AppVeyor build-script step. CI validates all
-branches and PRs, uploads XML results, and retains logs. Publication is separate.
-
-Required tools for x64: Visual Studio with v145 C++ x64 build tools, matching
-MFC/ATL (including Spectre libraries used by these projects), Windows SDK,
-and .NET SDK compatible with `global.json`. Installer builds additionally use
-.NET Framework 4.8 targeting tools, WixSharp 2.13.0, WiX CLI 5.0.2 and its UI
-extension 5.0.2. The verified local x64 configuration on 2026-09-07 used MSBuild
-18.6.3, MSVC/MFC 14.51.36231, Windows SDK 10.0.28000.0, and .NET SDK 10.0.303.
-The current personal-use target is Windows 11 x64. ARM64 tools and validation are
-out of scope; the ARM64 commands above are optional future release work.
-
-Clean verification uses a fresh source checkout (or `git archive` expanded into
-an empty directory with the reviewed changes applied). Change directory into
-that checkout before invoking `build.ps1`; NUKE locates its root from the current
-directory. Do not copy `bin`, `obj`, `packages`, staging, or installer outputs.
-Run the x64 UnitTest command above. To verify failure propagation, add an intentionally
-failing Google Test only in the disposable checkout, rerun `UnitTest`, and
-confirm a nonzero exit. Never commit that injected failure.
+Historical companion-only MSI build commands are superseded.

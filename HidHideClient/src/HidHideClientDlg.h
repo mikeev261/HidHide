@@ -110,6 +110,7 @@ private:
     NOTIFYICONDATAW m_NotifyIcon{};
     bool m_StartHidden{};
     bool m_Exiting{};
+    bool m_MaintenancePrepared{};
     bool m_HideNoticeShown{};
     size_t m_LastTrayProfileCount{ static_cast<size_t>(-1) };
     std::wstring m_LastStatus;
@@ -128,6 +129,7 @@ private:
     afx_msg void OnTimer(_In_ UINT_PTR nIDEvent);
     afx_msg void OnClose();
     afx_msg void OnDestroy();
+    afx_msg void OnSysCommand(UINT id, LPARAM parameter);
     afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
     afx_msg LRESULT OnTrayIcon(_In_ WPARAM wParam, _In_ LPARAM lParam);
     afx_msg LRESULT OnHideAfterStart(_In_ WPARAM wParam, _In_ LPARAM lParam);

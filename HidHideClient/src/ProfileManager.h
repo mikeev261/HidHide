@@ -39,6 +39,7 @@ public:
     bool HasConflict() const { return m_Conflict; }
     bool EffectiveActive() const { return m_Expected.active; }
     void ExitSafely();
+    HidHide::Configuration PrepareMaintenance();
     void ReportFailure(std::string const& message) { m_Status = std::wstring(message.begin(), message.end()); }
 
 private:

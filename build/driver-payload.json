@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "release": "v1.5.230.0",
+  "url": "https://github.com/nefarius/HidHide/releases/download/v1.5.230.0/HidHide_1.5.230_x64.exe",
+  "archiveName": "HidHide_1.5.230_x64.exe",
+  "archiveSha256": "F4BBBCB82E6258641B887C74BC81C4C5F66E4AA811808DFC304347687B7605F6",
+  "archiveSignerThumbprint": "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
+  "architecture": "x64",
+  "driverVersion": "1.4.181.0",
+  "infDriverVer": "10/31/2023,1.4.181.0",
+  "catalogSigner": "Microsoft Windows Hardware Compatibility Publisher",
+  "catalogSignerThumbprint": "C1DA308696092A9310FAEFD50EF708453CA36DF7",
+  "verification": "SignTool verify /kp /v for catalog; /kp /v /c for INF and SYS; SHA256 before extraction and before/after staging; AMD64 PE machine and INF model validation",
+  "license": "MIT; original LICENSE.rtf accompanies the unchanged signed package",
+  "provenance": "https://github.com/nefarius/HidHide/releases/tag/v1.5.230.0",
+  "extraction": "Advanced Installer documented /extract to an existing absolute directory; never msiexec /a or normal setup",
+  "helper": {
+    "selected": null,
+    "reason": "Use owned Windows API support code. Bundled nefcon 1.2.0.0 rejected: source compares BOOL NeedReboot > 1 and can lose reboot state.",
+    "rejectedVersion": "1.2.0.0",
+    "rejectedSha256": "1482FA240CAD984E02206427F1EB211E62C9A44B058484FC3E83CCB5B1A1FBCA",
+    "sourceCommit": "0c44775352584ef4b0f15d7a2e724036d843134b",
+    "license": "MIT; not redistributed"
+  },
+  "files": [
+    { "name": "HidHide.inf", "source": "4F26DAF/x64/HidHide/HidHide.inf", "sha256": "38BF0541D798991A893E5DDAC37430D097361726A00CD714C287DA7A774722DF", "catalogMember": true },
+    { "name": "HidHide.sys", "source": "4F26DAF/x64/HidHide/HidHide.sys", "sha256": "E3BB8B6A4E4FF90290B34E710EDBEF88CF71CEC6BA0CADCB8E1685D5DD65DDB2", "catalogMember": true },
+    { "name": "hidhide.cat", "source": "4F26DAF/x64/HidHide/hidhide.cat", "sha256": "0E4209963524163B3B75302C60F7B8A965FC349ADA5752B74452AD59D417E877", "catalogMember": false },
+    { "name": "LICENSE.rtf", "source": "4F26DAF/x64/HidHide/LICENSE.rtf", "sha256": "62356AD799305776DDD2FDF7B178EC9755E17ED980DA560E3887B883465825E0", "catalogMember": false }
+  ]
+}

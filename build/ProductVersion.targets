@@ -1,0 +1,14 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)..\ProductVersion.props" />
+  <PropertyGroup>
+    <BldProductVersion>$(HidHideProductVersion)</BldProductVersion>
+    <BldProductVersionMajor>$([System.Version]::Parse('$(BldProductVersion)').Major)</BldProductVersionMajor>
+    <BldProductVersionMinor>$([System.Version]::Parse('$(BldProductVersion)').Minor)</BldProductVersionMinor>
+    <BldProductVersionRevision>$([System.Version]::Parse('$(BldProductVersion)').Build)</BldProductVersionRevision>
+    <BldProductVersionBuild>$([System.Version]::Parse('$(BldProductVersion)').Revision)</BldProductVersionBuild>
+  </PropertyGroup>
+  <Target Name="ValidateHidHideProductVersion" BeforeTargets="PrepareForBuild">
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(BldProductVersion)', '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.0$'))" Text="ProductVersion.props must specify major.minor.build.0, without leading zeroes or suffixes." />
+    <Error Condition="$(BldProductVersionMajor) &gt; 255 Or $(BldProductVersionMinor) &gt; 255 Or $(BldProductVersionRevision) &gt; 65535" Text="Product version exceeds MSI limits (255.255.65535.0)." />
+  </Target>
+</Project>

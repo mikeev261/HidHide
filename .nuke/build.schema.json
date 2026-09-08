@@ -24,10 +24,11 @@
     "ExecutableTarget": {
       "type": "string",
       "enum": [
-        "BuildMsi",
+        "BuildSetup",
         "Ci",
         "Clean",
         "Compile",
+        "InstallerTests",
         "Restore",
         "StageInstallerPayload",
         "UnitTest"
@@ -112,9 +113,21 @@
           "type": "string",
           "description": "Configuration to build - Default is 'Debug' (local) or 'Release' (server)"
         },
+        "DriverPayload": {
+          "type": "string",
+          "description": "Verified unchanged x64 driver payload directory (or HIDHIDE_DRIVER_PAYLOAD)"
+        },
         "Platform": {
           "type": "string",
           "description": "Platform to build: x64 | ARM64. Default is current CI platform or x64 locally"
+        },
+        "SignTool": {
+          "type": "string",
+          "description": "Windows SDK signtool.exe for kernel catalog verification"
+        },
+        "UpstreamRecovery": {
+          "type": "string",
+          "description": "Verified upstream recovery EXE (or HIDHIDE_UPSTREAM_RECOVERY)"
         }
       }
     },

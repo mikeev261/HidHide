@@ -5,6 +5,7 @@
 #include "Configuration.h"
 #include "ConfigurationSession.h"
 #include <functional>
+#include "Maintenance.h"
 
 namespace HidHide
 {
@@ -27,6 +28,8 @@ namespace HidHide
         void SetCoordinator(std::function<Configuration()> read,
             std::function<void(Configuration const&, Configuration const&, bool)> commit);
         std::vector<std::uint8_t> HandleRequest(std::vector<std::uint8_t> const& request);
+        void SetMaintenanceHandler(std::function<Configuration()> prepare) { m_PrepareMaintenance = std::move(prepare); }
+        static std::unique_ptr<Maintenance::Session> BeginMaintenance();
         static Configuration ReadDriverConfiguration();
         static void CommitDriverConfiguration(Configuration const& expected, Configuration const& desired);
 
@@ -116,5 +119,6 @@ namespace HidHide
         bool m_DisableRequested{};
         std::function<Configuration()> m_Read;
         std::function<void(Configuration const&, Configuration const&, bool)> m_Commit;
+        std::function<Configuration()> m_PrepareMaintenance;
     };
 }

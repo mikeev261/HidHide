@@ -7,6 +7,8 @@
 #include "FilterDriverProxy.h"
 #include "Utils.h"
 #include "Logging.h"
+#include <winver.h>
+#pragma comment(lib, "version.lib")
 
 UINT const WM_HIDHIDE_SHOW_MANAGER{ ::RegisterWindowMessageW(L"HidHide.AppProfiles.ShowManager") };
 UINT const WM_TASKBAR_CREATED{ ::RegisterWindowMessageW(L"TaskbarCreated") };
@@ -31,6 +33,27 @@ namespace
     constexpr UINT TRAY_COMMAND_ACCEPT_CURRENT{ 3 };
     constexpr UINT TRAY_COMMAND_RESUME{ 4 };
     constexpr UINT TRAY_COMMAND_PAUSE{ 5 };
+    constexpr UINT ABOUT_COMMAND{ 0x0010 };
+
+    std::wstring InstalledDriverVersion()
+    {
+        wchar_t system[MAX_PATH]{};
+        auto length = ::GetSystemDirectoryW(system, MAX_PATH);
+        if (!length || length >= MAX_PATH) return L"Unavailable";
+        auto path = std::wstring(system) + L"\\drivers\\HidHide.sys";
+        DWORD unused{};
+        auto size = ::GetFileVersionInfoSizeW(path.c_str(), &unused);
+        if (!size || size > 1024 * 1024) return L"Not installed or version unavailable";
+        std::vector<BYTE> bytes(size);
+        if (!::GetFileVersionInfoW(path.c_str(), 0, size, bytes.data())) return L"Unavailable";
+        VS_FIXEDFILEINFO* info{}; UINT count{};
+        if (!::VerQueryValueW(bytes.data(), L"\\", reinterpret_cast<void**>(&info), &count) ||
+            count < sizeof(VS_FIXEDFILEINFO) || info->dwSignature != 0xfeef04bd) return L"Unavailable";
+        std::wostringstream version;
+        version << HIWORD(info->dwFileVersionMS) << L'.' << LOWORD(info->dwFileVersionMS)
+            << L'.' << HIWORD(info->dwFileVersionLS) << L'.' << LOWORD(info->dwFileVersionLS);
+        return version.str();
+    }
 }
 
 #pragma warning(push)
@@ -43,6 +66,7 @@ BEGIN_MESSAGE_MAP(CHidHideClientDlg, CDialogEx)
     ON_WM_TIMER()
     ON_WM_CLOSE()
     ON_WM_DESTROY()
+    ON_WM_SYSCOMMAND()
     ON_MESSAGE(WM_DEVICES_CHANGED, &CHidHideClientDlg::OnDevicesChanged)
     ON_MESSAGE(WM_TRAY_ICON, &CHidHideClientDlg::OnTrayIcon)
     ON_MESSAGE(WM_HIDE_AFTER_START, &CHidHideClientDlg::OnHideAfterStart)
@@ -96,6 +120,11 @@ BOOL CHidHideClientDlg::OnInitDialog()
 {
     TRACE_ALWAYS(L"");
     CDialogEx::OnInitDialog();
+    if (auto menu = GetSystemMenu(FALSE))
+    {
+        menu->AppendMenuW(MF_SEPARATOR);
+        menu->AppendMenuW(MF_STRING, ABOUT_COMMAND, L"About HidHide...");
+    }
 
     m_FilterDriverProxy = std::make_unique<HidHide::FilterDriverProxy>(true, true);
 
@@ -138,6 +167,18 @@ BOOL CHidHideClientDlg::OnInitDialog()
 
     m_ProfileManager = std::make_unique<CProfileManager>(*m_FilterDriverProxy);
     m_ProfileManager->Recover();
+    m_FilterDriverProxy->SetMaintenanceHandler([this]
+    {
+        // A modal child runs a nested message loop. Ending the owner dialog from
+        // its timer cannot unwind that loop, so ownership would remain held.
+        // Refuse before changing baseline or marking this manager prepared.
+        if (!IsWindowEnabled())
+            throw std::runtime_error("Close open HidHide dialogs before running setup");
+        auto confirmed = m_ProfileManager->PrepareMaintenance();
+        m_MaintenancePrepared = true;
+        EnableWindow(FALSE);
+        return confirmed;
+    });
     m_ConfigurationServer = std::make_unique<HidHide::Channel::Server>();
     m_ProfileManager->Tick();
     AddTrayIcon();
@@ -198,7 +239,7 @@ void CHidHideClientDlg::UpdateTrayTooltip()
     if (m_LastTrayProfileCount == activeProfileCount && m_LastStatus == status) return;
 
     std::wostringstream text;
-    text << L"HidHide App Profiles";
+    text << L"HidHide (mikeev261 fork) v" << _L(BldProductVersion);
     if (0 != activeProfileCount) text << L" - " << activeProfileCount << L" detected";
     text << L" - " << status;
     SetWindowTextW(text.str().c_str());
@@ -286,6 +327,7 @@ void CHidHideClientDlg::OnShowWindow(BOOL bShow, UINT nStatus)
 }
 
 _Use_decl_annotations_
+_Use_decl_annotations_
 void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
 {
     if ((PROFILE_TIMER_ID == nIDEvent) && m_ProfileManager)
@@ -294,7 +336,15 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
         {
             auto const before = m_FilterDriverProxy->CachedConfiguration();
             if (m_ConfigurationServer) m_ConfigurationServer->Pump([this](auto const& request) { return m_FilterDriverProxy->HandleRequest(request); });
+            if (m_MaintenancePrepared)
+            {
+                // Stop reconciling immediately. Allow the authenticated client to
+                // consume its confirmation and close before destroying the pipe.
+                if (!m_ConfigurationServer->Connected()) { m_Exiting = true; CDialogEx::OnCancel(); }
+                return;
+            }
             m_ProfileManager->Tick();
+            if (HidHide::Maintenance::Active()) { UpdateTrayTooltip(); return; }
             if (before != m_FilterDriverProxy->CachedConfiguration())
             {
                 m_BlacklistDlg.Refresh(true);
@@ -325,6 +375,22 @@ void CHidHideClientDlg::OnTimer(UINT_PTR nIDEvent)
 void CHidHideClientDlg::OnClose()
 {
     HideToTray();
+}
+
+void CHidHideClientDlg::OnSysCommand(UINT id, LPARAM parameter)
+{
+    if ((id & 0xfff0) == ABOUT_COMMAND)
+    {
+        std::wstring message = L"HidHide (mikeev261 fork)\nFork version: " + std::wstring(_L(BldProductVersion))
+            + L"\nInstalled driver file version: " + InstalledDriverVersion()
+            + L"\n\nEnhanced configuration and App Profiles by mikeev261."
+              L"\nBased on HidHide by Nefarius Software Solutions and Eric Korff de Gidts."
+              L"\nThe Microsoft-signed upstream driver is distributed unchanged."
+              L"\nSee the installed Driver\\LICENSE.rtf for upstream license terms.";
+        MessageBoxW(message.c_str(), L"About HidHide", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    CDialogEx::OnSysCommand(id, parameter);
 }
 
 void CHidHideClientDlg::OnCancel()

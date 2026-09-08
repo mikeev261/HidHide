@@ -48,7 +48,7 @@ or guarantee that automatic detection beats a game's first device open.
 
 ## Local protocol and permissions
 
-The pipe accepts only versioned Read and compare-and-commit configuration messages.
+The pipe accepts versioned Read, compare-and-commit and payload-free PrepareMaintenance messages. Maintenance preparation is described in [maintenance-session.md](docs/maintenance-session.md).
 It carries no executable commands, arbitrary file/registry paths, or process-launch
 requests. Both peers verify the same Windows user SID; the pipe DACL permits that
 user, rejects remote clients, and uses a first-instance claim. The global mutex

@@ -18,7 +18,6 @@ END_MESSAGE_MAP()
 namespace
 {
     HHOOK s_hHook;
-    std::unique_ptr<HidHide::Channel::Lease> s_Owner;
 
     // Alter message box labels and detach from the window activiation notification
     LRESULT CALLBACK LocalizedMessageBoxCBTProc(_In_ INT code, _In_ WPARAM wParam, _In_ LPARAM lParam)
@@ -99,7 +98,6 @@ CHidHideClientApp::CHidHideClientApp() noexcept
 
 CHidHideClientApp::~CHidHideClientApp()
 {
-    s_Owner.reset();
     ::LogUnregisterProviders();
 }
 
@@ -133,9 +131,21 @@ BOOL CHidHideClientApp::InitInstance()
     for (int index = 1; index < __argc; index++)
         startHidden = startHidden || (0 == _wcsicmp(__wargv[index], L"--background"));
 
-    try { s_Owner = std::make_unique<HidHide::Channel::Lease>(); }
-    catch (std::exception const& error) { ::MessageBoxA(nullptr, error.what(), "HidHide ownership", MB_OK | MB_ICONERROR); return FALSE; }
-    if (!s_Owner->Acquired())
+    // Keep ownership until the modal dialog and its profile manager are destroyed.
+    // A namespace-static lease would be destroyed before the earlier global app
+    // object, making any release from the app destructor a use-after-destruction.
+    std::unique_ptr<HidHide::Channel::Lease> owner;
+    try
+    {
+        HidHide::Maintenance::Admission admission;
+        owner = std::make_unique<HidHide::Channel::Lease>();
+    }
+    catch (std::exception const& error)
+    {
+        if (!startHidden) ::MessageBoxA(nullptr, error.what(), "HidHide ownership", MB_OK | MB_ICONERROR);
+        return FALSE;
+    }
+    if (!owner->Acquired())
     {
         if (!startHidden) ::PostMessageW(HWND_BROADCAST, WM_HIDHIDE_SHOW_MANAGER, 0, 0);
         if (!startHidden) ::MessageBoxW(nullptr, L"The configuration coordinator is already running, possibly in another Windows session. Only one session can own automatic profiles.", L"HidHide App Profiles", MB_OK | MB_ICONINFORMATION);

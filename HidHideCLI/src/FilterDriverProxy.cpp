@@ -8,6 +8,7 @@
 #include "Volume.h"
 #include "Logging.h"
 #include "ConfigurationChannel.h"
+#include "DriverRegistrySnapshot.h"
 
 namespace
 {
@@ -244,17 +245,29 @@ namespace HidHide
         }
         Configuration Remote(Protocol::Writer request)
         {
-            auto response = Channel::Exchange(std::move(request.data));
-            Protocol::Reader reader(response);
-            if (reader.Number() != Protocol::Version) throw std::runtime_error("Unsupported coordinator protocol");
-            if (reader.Number())
-            {
-                auto error = reader.String(); reader.End();
-                std::string message; for (auto c : error) message.push_back(c < 128 ? static_cast<char>(c) : '?');
-                throw std::runtime_error(message);
-            }
-            auto state = reader.State(); reader.End(); return state;
+            return Protocol::ReadReply(Channel::Exchange(std::move(request.data)));
         }
+    }
+
+    std::unique_ptr<Maintenance::Session> FilterDriverProxy::BeginMaintenance()
+    {
+        Maintenance::RequireOrdinaryUser();
+        return std::make_unique<Maintenance::Session>([]
+        {
+            Protocol::Writer request; request.Number(Protocol::Version);
+            request.Number(static_cast<std::uint32_t>(Protocol::Command::PrepareMaintenance));
+            return Remote(std::move(request));
+        }, RequireNoRecovery, []
+        {
+            auto const status = DeviceStatus();
+            if (status == ERROR_FILE_NOT_FOUND)
+            {
+                auto snapshot = Maintenance::ReadStoredDriverSnapshot(); snapshot.configuration.profiles = ::GetAppProfiles();
+                return snapshot;
+            }
+            if (status != ERROR_SUCCESS) THROW_WIN32(status);
+            return Maintenance::Snapshot{ true, ReadDriverConfiguration() };
+        });
     }
 
     Configuration FilterDriverProxy::ReadDriverConfiguration()
@@ -299,8 +312,11 @@ namespace HidHide
     {
         if (m_Read) return m_Read();
         if (m_Coordinator) return ReadDriverConfiguration();
-        Channel::Lease lease;
-        if (lease.Acquired()) return ReadDriverConfiguration();
+        {
+            Maintenance::Admission admission;
+            Channel::Lease lease;
+            if (lease.Acquired()) return ReadDriverConfiguration();
+        } // Never hold admission while waiting for the GUI to handle a request.
         Protocol::Writer request; request.Number(Protocol::Version); request.Number(static_cast<std::uint32_t>(Protocol::Command::Read));
         return Remote(std::move(request));
     }
@@ -310,15 +326,17 @@ namespace HidHide
     void FilterDriverProxy::Commit(Configuration const& desired)
     {
         if (m_Commit) m_Commit(m_Original, desired, m_DisableRequested);
-        else if (m_Coordinator) CommitDriverConfiguration(m_Original, desired);
+        else if (m_Coordinator) { Maintenance::Admission admission; CommitDriverConfiguration(m_Original, desired); }
         else
         {
-            Channel::Lease lease;
-            if (lease.Acquired())
+            bool direct{};
             {
-                if (desired != m_Original || m_DisableRequested) { RequireNoRecovery(); CommitDriverConfiguration(m_Original, desired); }
+                Maintenance::Admission admission;
+                Channel::Lease lease;
+                direct = lease.Acquired();
+                if (direct && (desired != m_Original || m_DisableRequested)) { RequireNoRecovery(); CommitDriverConfiguration(m_Original, desired); }
             }
-            else
+            if (!direct)
             {
                 Protocol::Writer request; request.Number(Protocol::Version); request.Number(static_cast<std::uint32_t>(Protocol::Command::Commit));
                 request.State(m_Original); request.State(desired); request.Number(m_DisableRequested);
@@ -344,29 +362,13 @@ namespace HidHide
 
     std::vector<std::uint8_t> FilterDriverProxy::HandleRequest(std::vector<std::uint8_t> const& request)
     {
-        Protocol::Writer response; response.Number(Protocol::Version);
-        try
+        return Protocol::Dispatch(request, [this] { return Read(); },
+            [this](auto const& expected, auto const& desired, bool disable)
         {
-            Protocol::Reader reader(request);
-            if (reader.Number() != Protocol::Version) throw std::runtime_error("Unsupported coordinator protocol");
-            auto command = static_cast<Protocol::Command>(reader.Number());
-            if (command == Protocol::Command::Read) { reader.End(); response.Number(0); response.State(Read()); }
-            else if (command == Protocol::Command::Commit)
-            {
-                auto expected = reader.State(); auto desired = reader.State(); auto disable = reader.Boolean(); reader.End();
-                if (!m_Commit) throw std::runtime_error("Coordinator is not ready");
-                m_Commit(expected, desired, disable);
-                response.Number(0); response.State(desired);
-                Refresh();
-            }
-            else throw std::runtime_error("Unknown configuration command");
-        }
-        catch (std::exception const& error)
-        {
-            response = {}; response.Number(Protocol::Version); response.Number(1);
-            std::string message(error.what()); response.String(std::wstring(message.begin(), message.end()));
-        }
-        return response.data;
+            if (!m_Commit) throw std::runtime_error("Coordinator is not ready");
+            m_Commit(expected, desired, disable);
+            Refresh();
+        }, m_PrepareMaintenance);
     }
 
     DWORD FilterDriverProxy::DeviceStatus()

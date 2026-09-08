@@ -1,21 +1,25 @@
-# Agent Guidelines for HidHide App Profiles
+# Agent guidelines for unified HidHide
 
-This repository maintains a user-mode companion to an independently installed Microsoft-signed HidHide driver. Read [INSTALL_LAYOUT.md](INSTALL_LAYOUT.md) and [MAINTENANCE.md](MAINTENANCE.md) before changing build, release, installation, or product scope.
+The unified package design supersedes all historical companion-only restrictions.
+Read INSTALL_LAYOUT.md, MAINTENANCE.md, docs/unified-package-design.md and
+current docs/unified-package-progress.md before changing installation or scope.
 
-## Components
+- One Windows 11 x64 Burn setup owns one private MSI and one visible fork entry.
+- Package/manage only the exact verified Microsoft-signed upstream driver.
+- Never modify kernel code, exported IOCTL contracts, signed payload, Secure Boot,
+  trust stores, or test signing. HidHide/ is archival and excluded from builds.
+- Preserve profile definitions, baseline, unrelated filters and initiating-user
+  ownership. Feeders must remain whitelisted to read hidden physical devices.
+- MFC resources and message maps must remain consistent with UI changes.
+- Run meaningful native and managed checks, and the unified Ci target described
+  in BUILD_AND_RELEASE.md. No WDK or ARM64 tools are needed for supported x64.
+- Installer.Bootstrapper owns Burn orchestration; Installer.Controller owns
+  protected preparation/recovery; Installer.Driver owns native lifecycle;
+  Installer owns the private MSI. Keep authorization boundaries intact.
+- Native integration tests change machine state: preserve recovery evidence and
+  use authorized environments. Never delete uninstall entries to mimic migration.
+- Keep progress concise and distinguish build success, host/VM validation, and
+  public release readiness. Do not publish or merge automatically.
 
-- `HidHideClient/`: C++ MFC configuration UI and resident app profile manager. Keep resource files and MFC message maps consistent with UI changes.
-- `HidHideCLI/`: user-mode configuration CLI.
-- `HidHide.Tests/`: tests for companion logic. Cover new logic here when applicable.
-- `Shared/`: shared headers and exported driver contracts; preserve compatibility with the separately installed driver and external consumers.
-- `Installer/`: WixSharp companion MSI containing only Client and CLI.
-- `build/` and `.nuke/`: NUKE build orchestration.
-- `HidHide/`: archival kernel source, intentionally excluded from the default solution/build. Do not add new kernel enforcement or change exported IOCTL behavior as part of companion work.
-
-## Development
-
-Run `.\build.ps1 Ci --configuration Release --platform x64` to build, test, and package the companion. ARM64 requires the corresponding C++/MFC tools; ARM64 test executables cannot run on an x64 CI host. See MAINTENANCE.md for prerequisites and release signing.
-
-The signed driver exposes a global hidden-device list. The companion manages profiles in user mode; feeder utilities must remain whitelisted to read hidden physical devices. Preserve the user's baseline configuration and compatibility with existing driver interfaces. Installer changes must never deploy, replace, or remove the kernel driver.
-
-Use modern C++ in user-mode code. A future driver maintenance effort requires an explicit scope decision and a dedicated kernel verification plan; retained source is reference material, not an invitation to expand this product's scope.
+Historical companion implementation remains reference material, not the current
+product scope. See docs/unified-package-history.md for implementation history.

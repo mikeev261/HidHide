@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../ProductVersion.props" />
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net48</TargetFramework><LangVersion>latest</LangVersion><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget><AssemblyName>HidHide.SetupController</AssemblyName><Version>$(HidHideProductVersion)</Version></PropertyGroup>
+  <ItemGroup><Reference Include="System.Runtime.Serialization"/><Reference Include="System.Management"/><Compile Include="../Installer.Driver/*.cs" Exclude="../Installer.Driver/Program.cs" Link="Driver/%(Filename)%(Extension)"/><Compile Include="../Installer/DriverFilters.cs" Link="DriverFilters.cs"/><Compile Include="../Installer/ProductContract.cs" Link="ProductContract.cs"/><Compile Include="../Installer/InstalledProducts.cs" Link="InstalledProducts.cs"/></ItemGroup>
+  <ItemGroup Condition="'$(SetupCacheRoot)' != ''"><EmbeddedResource Include="$(SetupCacheRoot)\*" LogicalName="cache.%(Filename)%(Extension)" /></ItemGroup>
+</Project>

@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- MSI compares only the first three fields. Increment one for every upgrade. -->
+    <HidHideProductVersion>2.1.0.0</HidHideProductVersion>
+  </PropertyGroup>
+</Project>

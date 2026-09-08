@@ -2,7 +2,7 @@ version: 1.7.{build}.0
 build_cloud: WIN-LKR467JS4GL
 image: Windows
 configuration: Release
-# All branches and pull requests validate the companion.
+# All branches and pull requests validate unified x64 setup.
 test: off
 platform:
 - x64
@@ -10,7 +10,7 @@ install:
 - ps: |
     $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
     $env:HIDHIDE_MSBUILD = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild/**/Bin/MSBuild.exe | Select-Object -First 1
-    if (!$env:HIDHIDE_MSBUILD) { throw 'MSBuild not found; install Visual Studio with v145 x64/ARM64 tools and MFC.' }
+    if (!$env:HIDHIDE_MSBUILD) { throw 'MSBuild not found; install Visual Studio with v145 x64 tools and MFC.' }
     dotnet tool install --global wix --version 5.0.2
     if ($LASTEXITCODE) { throw 'WiX installation failed' }
     $env:PATH = "$(Join-Path $env:USERPROFILE '.dotnet/tools');$env:PATH"
@@ -18,17 +18,16 @@ install:
     if ($LASTEXITCODE) { throw 'WiX extension installation failed' }
 build_script:
 - ps: |
-    foreach ($arch in @('x64', 'ARM64')) {
-      & powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 Ci --configuration Release --platform $arch --compiler-path $env:HIDHIDE_MSBUILD
-      if ($LASTEXITCODE) { throw "Companion CI failed for $arch (exit $LASTEXITCODE)" }
-    }
+    & pwsh -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 Ci --configuration Release --platform x64
+    if ($LASTEXITCODE) { throw "Unified x64 CI failed (exit $LASTEXITCODE)" }
 on_finish:
 - ps: |
     Get-ChildItem artifacts/tests -Filter results.xml -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
       (New-Object Net.WebClient).UploadFile("https://ci.appveyor.com/api/testresults/junit/$env:APPVEYOR_JOB_ID", $_.FullName)
     }
 artifacts:
-- path: artifacts/msi/**/*.msi
+- path: artifacts/setup/**/HidHide.Setup.exe
+- path: artifacts/setup/**/release-manifest.json
 - path: artifacts/logs/**/*.binlog
 - path: artifacts/tests/**/*.xml
 - path: bin/**/*.pdb

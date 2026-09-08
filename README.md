@@ -1,6 +1,6 @@
-# <img src="assets/hidhide-128x128.png" align="left" />HidHide App Profiles
+# <img src="assets/hidhide-128x128.png" align="left" />HidHide (mikeev261 fork)
 
-A user-mode companion for an existing [official Microsoft-signed HidHide driver](https://github.com/nefarius/HidHide). This fork provides the configuration UI, resident app profile manager, and CLI; it does not distribute a driver. See [installation layout](INSTALL_LAYOUT.md) and [build, release, and maintenance scope](MAINTENANCE.md).
+One Windows 11 x64 setup for enhanced HidHide configuration, resident App Profiles, CLI, and the unchanged Microsoft-signed upstream driver. The unified package is undergoing release validation; see [current status](docs/unified-package-progress.md), [installation layout](INSTALL_LAYOUT.md), and [build instructions](BUILD_AND_RELEASE.md).
 
 ## Introduction
 
@@ -33,7 +33,7 @@ multiple notifications while binding game functions and device controls.
 
 ## Package content
 
-The companion MSI installs `HidHideClient.exe` and `HidHideCLI.exe` under `%ProgramFiles%\HidHide App Profiles\`. Install the official HidHide driver separately first. The companion never installs, replaces, or removes driver files or services. The configuration utility runs without elevated rights.
+The Burn setup owns one private MSI containing `HidHideClient.exe`, `HidHideCLI.exe`, app-local runtimes and the verified driver package under `%ProgramFiles%\HidHide\`. It manages driver installation, repair and removal and presents one Installed Apps entry. Start setup normally and approve elevation when requested; the configuration utility runs without elevated rights. Existing companion-only instructions are superseded.
 
 ## User guide
 
@@ -82,7 +82,7 @@ with *+* (or drag it onto the tab) and select the physical devices to hide. Clos
 running in the notification area; use its tray menu to reopen it or exit and restore the normal Devices-tab configuration.
 After the manager has run with profiles configured, it starts automatically at sign-in. If profiles were created with the
 CLI while the manager was absent, open the manager once to register autostart. If multiple profiled applications run at the
-same time, their selected devices are combined. This user-mode design reuses the separately installed Microsoft-signed
+same time, their selected devices are combined. This user-mode design reuses the unchanged Microsoft-signed
 HidHide driver and remains compatible with Secure Boot.
 
 The signed driver exposes a single global hidden-device list, so an active profile temporarily affects every non-whitelisted
@@ -95,7 +95,7 @@ the effective driver state. Turning hiding off suspends automatic profiles until
 from the tray menu; this pause survives a restart. *Pause automatic profiles and restore baseline* restores your normal
 settings without changing your saved enabled preference.
 
-The CLI works while the manager is resident. Only one companion coordinator can run across Windows sessions. Another
+The CLI works while the manager is resident. Only one configuration coordinator can run across Windows sessions. Another
 configuration utility can access the driver between transactions; if it changes settings during an override, the manager
 reports a conflict and stops applying profiles. *Resolve conflict: accept current driver settings* preserves those actual
 settings as your new baseline and leaves profiles paused. The old restoration claim is discarded only by that explicit
@@ -128,7 +128,7 @@ otherwise be ambiguous.
 
 ## Package integration
 
-The separately installed upstream driver package exposes the following registry keys; these are not companion MSI registration keys.
+The unchanged upstream driver exposes the following registry keys; these are distinct from unified installer registration.
 *"HKCR\Installer\Dependencies\NSS.Drivers.HidHide.x64\Version"* signals the availability of HidHide and its version.
 *"HKCR\SOFTWARE\Nefarius Software Solutions e.U.\Nefarius Software Solutions e.U. HidHide\Path"* tells its location.
 
@@ -146,7 +146,7 @@ Contact us [through Discord](https://discord.nefarius.at/)!
 
 ---
 
-The separately installed HidHide driver provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
+The HidHide driver provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
 Tracing can be found under *Applications and Services Logs* and *Nefarius* after enabling *Show Analytic and Debug Logs*.
 Extended tracing is available but switched off per default for performance reasons. Tracing is controlled using the *wevtutil* utility
 which is an integral part of the operating system. To enable extended tracing, open a command shell, and enter the following;

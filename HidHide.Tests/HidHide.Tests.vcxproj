@@ -223,6 +223,7 @@
     <ClCompile Include="device_selection_tests.cpp" />
     <ClCompile Include="configuration_session_tests.cpp" />
     <ClCompile Include="configuration_tests.cpp" />
+    <ClCompile Include="maintenance_tests.cpp" />
     <ClCompile Include="profile_process_match_tests.cpp" />
     <ClCompile Include="ioctl_contract_tests.cpp" />
   </ItemGroup>

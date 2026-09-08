@@ -1,3 +1,5 @@
+> Product decision (2026-09-07): companion-only packaging restrictions below are superseded by the [unified package design](docs/unified-package-design.md). The target is one HidHide (mikeev261 fork) Burn setup with a private MSI owning the applications and an unchanged verified Microsoft-signed driver. Kernel changes, unsigned driver builds and test-signing are excluded. Implementation status and open gates are recorded in [progress](docs/unified-package-progress.md). Existing companion build commands below remain historical until the unified build is implemented.
+
 # App Profiles reliability and release plan
 
 Prepared: 2026-09-07. Review baseline: `e1263ae` on `codex/app-profiles-redesign`.

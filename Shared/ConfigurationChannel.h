@@ -58,11 +58,12 @@ namespace HidHide
             Handle handle{ nullptr, &::CloseHandle };
             bool acquired{};
         public:
-            explicit Lease(PCWSTR name = OwnerName)
+            explicit Lease(PCWSTR name = OwnerName, DWORD timeoutMs = 0)
             {
+                if (timeoutMs > 5000) throw std::runtime_error("Configuration ownership wait exceeds limit");
                 Security security(L"D:P(A;;0x00100001;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)");
                 handle = Own(::CreateMutexExW(&security.attributes, name, 0, SYNCHRONIZE | MUTEX_MODIFY_STATE));
-                auto const result = ::WaitForSingleObject(handle.get(), 0);
+                auto const result = ::WaitForSingleObject(handle.get(), timeoutMs);
                 acquired = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
                 if (result == WAIT_FAILED) throw std::runtime_error("Cannot acquire configuration ownership");
             }
@@ -132,6 +133,9 @@ namespace HidHide
                 connected = false; response.clear(); sent = false;
             }
         public:
+            // Once a response has been consumed the client closes its end. Pump
+            // observes that close before a maintenance shutdown destroys the pipe.
+            bool Connected() const { return connected; }
             explicit Server(PCWSTR pipeName = PipeName)
             {
                 Security security(L"D:P(A;;GA;;;" + sid + L")");

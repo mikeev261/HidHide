@@ -18,8 +18,11 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
+    <ProjectReference Include="..\Installer.Driver\HidHide.DriverSetup.csproj" />
+    <Compile Remove="DriverFilters.cs" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\ProductVersion.props" Link="ProductVersion.props" CopyToOutputDirectory="Always" />
     <None Include="..\LICENSE.rtf">
       <Link>LICENSE.rtf</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

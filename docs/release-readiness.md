@@ -7,9 +7,9 @@ Scope is the complete original unified-package request and docs/unified-package-
 | One Burn EXE, private MSI, visible fork entry, UI shortcut | 2.0 host evidence; repeat final candidate |
 | Stable identities, coherent version, x64 target | ProductContract/props and deterministic ProductCode checks; native compatible upgrade matrix open |
 | Exact signed INF/SYS/CAT/license; no kernel/IOCTL change | Manifest, tamper tests, native hash; final source/package audit needed |
-| Empty-cache acquisition and unified clean-checkout CI | Empty-cache acquisition and bare unified Ci passed; final clean-checkout build pending |
+| Empty-cache acquisition and unified clean-checkout CI | Clean detached snapshot 26a8d50 passed bare Ci and empty-cache acquisition; repeat for any later final source changes |
 | Optional owned-code/MSI/Burn signing and unsigned mode | Optional signing implemented, certificate path untested; deliver explicitly unsigned |
-| Version/source commit/source changes/SHA256/manifest/logs | Manifest records commit, dirty state and source hashes; final clean source snapshot pending |
+| Version/source commit/source changes/SHA256/manifest/logs | Clean 26a8d50 unsigned artifact and all recovery sources recorded in release-vm-testing.md; final native acceptance still pending |
 | Clean install, reboot continuation, repair, uninstall/reinstall | 2.0 real host logs; final candidate verification pending |
 | Upstream-only, companion-only, both, companion99 migration | Policy tests exist; native matrix open |
 | Prior unified upgrade, rollback, downgrade, repeated operations | Protocol implementation and two-version matrix open |

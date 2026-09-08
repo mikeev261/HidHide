@@ -51,3 +51,31 @@ passing again. The current provisional candidate is
 `3A6940336C3A3173F906F8734ADA0B543D1696F7253D66C81409959998B86AB9`.
 Its packaging and 33 MSI checks passed. It remains an unsigned dirty-worktree
 test build; source commit/clean-checkout and native acceptance gates are open.
+
+Source snapshot `26a8d506de45b802365c345fd0d44b4a6570d91a` subsequently passed
+bare `build.ps1 Ci --configuration Release --platform x64` from a clean detached
+checkout, including empty-cache driver acquisition and the diagnostic checks.
+Logs: `artifacts/unified-evidence/clean-checkout-ci.log` and
+`artifacts/unified-evidence/clean-checkout-release.log`. Full unsigned packaging
+with all three recovery sources passed 33 MSI structure checks. Candidate:
+`artifacts/clean-validation-26a8d50/artifacts/release-unsigned/HidHide_2.1.0_x64.exe`,
+SHA-256 `1D267B9F07AF31E97F184CBF54D10BAA1FFB483128B0240BD13C4DA5EB02EC6B`.
+Its manifest reports that exact source commit and `dirty: false`. This is build
+evidence for that snapshot, not native acceptance or permission to replace the
+guest's pending earlier artifact. Later source changes require fresh packaging.
+
+An exploratory upgrade fixture at source `080d1a67b8bd487f1113310ece873ca58a4d7446`
+changes only ProductVersion.props from that baseline to 2.2.0.0. Its clean Ci and
+full unsigned packaging passed. Artifact:
+`artifacts/upgrade-validation-2.2/artifacts/FIXTURE-ONLY-2.2.0/HidHide_2.2.0_x64.exe`,
+SHA-256 `837DA0BED06DF8F8FEBDE0083BD0D9DB5E2BED4B7AE60DB85A083D88B617607E`.
+Adjacent FIXTURE-ONLY evidence identifies its test purpose. It has not been
+installed and must not be distributed as a public release.
+
+Subsequent packaging hardening checks both application PE images against the
+requested architecture before MSI generation. Installer tests passed 63 checks
+including the real built x64 executables. A staged application with an altered
+ARM64 Machine field was rejected before creating the MSI output directory
+(`artifacts/architecture-preflight-20260908/rejection.log`). Package inspection
+now passes 45 checks, including x64 summary information and 64-bit components.
+These checks do not establish native lifecycle success.

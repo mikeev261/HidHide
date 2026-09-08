@@ -18,6 +18,9 @@ function Rows([string]$table) {
 $script:checks=0
 function Check($condition,[string]$message) {if(!$condition){throw $message}; $script:checks++}
 try {
+ $summary=$db.SummaryInformation(0)
+ try { Check ($summary.Property(7).Split(';')[0] -eq 'x64') 'MSI summary targets x64' }
+ finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($summary) }
  $properties=@{}; Rows Property | ForEach-Object {$properties[$_.Values[0]]=$_.Values[1]}
  Check ($properties.ProductName -eq 'HidHide (mikeev261 fork)') 'Product branding'
  Check ($properties.Manufacturer -eq 'mikeev261') 'Publisher'
@@ -34,6 +37,9 @@ try {
  Check ($dirs.INSTALLDIR[1] -eq 'ProgramFiles64Folder' -and $dirs.INSTALLDIR[2] -eq 'HidHide') 'Application installation directory'
  Check ($dirs.Driver[1] -eq 'INSTALLDIR' -and $dirs.Driver[2] -eq 'Driver') 'Driver payload directory'
  $components=@{}; Rows Component | ForEach-Object {$components[$_.Values[0]]=$_.Values}
+ foreach($component in $components.Values) {
+  Check (([int]$component[3] -band 256) -ne 0) ('64-bit component: '+$component[0])
+ }
  $files=@(Rows File); Check ($files.Count -eq 10) 'Expected two applications, four runtime DLLs and four original driver/license files'
  foreach($row in $files) {
   $name=$row.Values[2].Split('|')[-1]; $component=$components[$row.Values[1]]

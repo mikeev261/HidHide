@@ -33,4 +33,37 @@ Check(DriverFilters.DecodeRegistryEntries(new[] { "VendorA", "VendorB" }).Sequen
 bool malformedRejected = false;
 try { DriverFilters.DecodeRegistryEntries(new[] { "VendorA", "" }); } catch (System.IO.InvalidDataException) { malformedRejected = true; }
 Check(malformedRejected, "Mixed empty and vendor entries remain rejected");
+byte[] Pe(ushort machine = 0x8664)
+{
+    var bytes = new byte[1024]; using var stream = new MemoryStream(bytes); using var writer = new BinaryWriter(stream);
+    writer.Write((ushort)0x5A4D); stream.Position = 0x3C; writer.Write(0x80u);
+    stream.Position = 0x80; writer.Write(0x00004550u); writer.Write(machine); writer.Write((ushort)1);
+    stream.Position = 0x80 + 20; writer.Write((ushort)240); writer.Write((ushort)2); writer.Write((ushort)0x20B);
+    stream.Position = 0x80 + 24 + 60; writer.Write(512u);
+    stream.Position = 0x80 + 24 + 108; writer.Write(16u);
+    stream.Position = 0x80 + 24 + 240 + 16; writer.Write(512u); writer.Write(512u); return bytes;
+}
+void ValidPe(byte[] bytes, bool arm64 = false) { using var stream = new MemoryStream(bytes); ExecutableArchitecture.Require(stream, arm64, "fixture.exe"); }
+void BadPe(byte[] bytes, string name, bool arm64 = false)
+{
+    bool rejected = false;
+    try { ValidPe(bytes, arm64); } catch (InvalidDataException error) { rejected = error.Message.Contains("fixture.exe"); }
+    Check(rejected, name);
+}
+ValidPe(Pe()); Check(true, "x64 executable accepted");
+ValidPe(Pe(0xAA64), true); Check(true, "historical ARM64 companion executable accepted");
+BadPe(Pe(0xAA64), "ARM64 cannot enter x64 MSI");
+BadPe(Pe(0x014C), "x86 cannot enter x64 MSI");
+BadPe(Pe(0xA641), "ARM64EC cannot enter x64 MSI");
+BadPe(Pe(), "x64 cannot enter ARM64 companion MSI", true);
+foreach (int length in new[] { 0, 63, 128, 150, 200, 400, 1000 }) BadPe(Pe().Take(length).ToArray(), "truncated PE rejected");
+foreach (var edit in new (int Offset, uint Value)[] { (0, 0), (0x3C, uint.MaxValue), (0x80, 0), (0x80 + 24 + 60, uint.MaxValue), (0x80 + 24 + 108, 17), (0x80 + 24 + 240 + 20, uint.MaxValue) })
+{
+    byte[] bytes = Pe(); BitConverter.GetBytes(edit.Value).CopyTo(bytes, edit.Offset); BadPe(bytes, "malformed PE bounds rejected");
+}
+foreach (var edit in new (int Offset, ushort Value)[] { (0x80 + 6, 0), (0x80 + 6, 97), (0x80 + 20, 2), (0x80 + 22, 0x2002), (0x80 + 22, 0), (0x80 + 24, 0x10B) })
+{
+    byte[] bytes = Pe(); BitConverter.GetBytes(edit.Value).CopyTo(bytes, edit.Offset); BadPe(bytes, "malformed executable header rejected");
+}
+foreach (string executable in args) { ExecutableArchitecture.Require(executable, false); Check(true, "actual staged x64 executable accepted"); }
 Console.WriteLine($"{checks} installer contract checks passed.");

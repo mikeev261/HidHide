@@ -233,6 +233,7 @@ public static class Program
                 string p = Path.Combine(StagingDir, name);
                 if (!IOFile.Exists(p))
                     throw new FileNotFoundException($"Staging payload incomplete; missing: {p}");
+                ExecutableArchitecture.Require(p, Platform == Platform.arm64);
                 ReadProductVersion(p);
             }
 

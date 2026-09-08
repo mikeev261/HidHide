@@ -79,3 +79,30 @@ ARM64 Machine field was rejected before creating the MSI output directory
 (`artifacts/architecture-preflight-20260908/rejection.log`). Package inspection
 now passes 45 checks, including x64 summary information and 64-bit components.
 These checks do not establish native lifecycle success.
+
+The architecture fix was committed as `51377b5bb9c0ef272f44d3757bc4631ca62b90fe`.
+Its clean detached checkout passed Ci (including 61 installer contract checks)
+and full unsigned packaging (45 MSI checks). Current candidate:
+`artifacts/clean-validation-51377b5/artifacts/release-unsigned/HidHide_2.1.0_x64.exe`,
+SHA-256 `438D386E11B6B4DE7C4129A56804A1AB0CFF447942A374A018D05393B479A9FF`.
+Manifest and `artifacts/unified-evidence/candidate-51377b5.json` identify its
+clean source, all recovery sources and incomplete native acceptance.
+
+At 18:15 EDT a fresh collector failed because the VM was off. The fixed-path
+`inspect-install-parent.log` had not been updated by an unsuccessful helper;
+its old process list must not be treated as current. Always inspect helper exit
+status and snapshot timestamp. After confirming the exact VM identity and Off
+state, the VM was started, without launching setup or restoring a checkpoint.
+The fresh `after-vm-boot-20260908-181655-433` snapshot recorded boot at 18:16:31
+and no HidHide processes, products, registrations, driver resources or recovery
+marker. The earlier Burn log records a system shutdown request at 18:03:11;
+the older exit-code file predates that attempt and is not its terminal result.
+
+Candidate 51377b5 was then copied with hash verification into the new guest
+directory `C:\ReleaseTests\candidate-51377b5` and launched once at 18:19:20
+under VMAdmin's filtered interactive token. At 18:19:46, fresh evidence
+`artifacts/release-vm/state-51377b5-20260908-181945.json` showed bundle PID 4192,
+bootstrapper PID 8268 and consent PID 4828 live in session 1, awaiting guest UAC.
+There was no terminal result. Use `check-51377b5.ps1` and its new timestamped
+output to observe this attempt; do not infer status from older fixed-path logs
+or launch another installer while this handle remains live.

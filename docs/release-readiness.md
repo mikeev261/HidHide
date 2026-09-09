@@ -10,7 +10,7 @@ Scope is the complete original unified-package request and docs/unified-package-
 | Empty-cache acquisition and unified clean-checkout CI | Clean detached snapshot 51377b5 passed bare Ci and empty-cache acquisition; repeat for any later final production changes |
 | Optional owned-code/MSI/Burn signing and unsigned mode | Optional signing implemented, certificate path untested; deliver explicitly unsigned |
 | Version/source commit/source changes/SHA256/manifest/logs | Clean 51377b5 unsigned artifact and all recovery sources recorded in release-vm-testing.md; final native acceptance still pending |
-| Clean install, reboot continuation, repair, uninstall/reinstall | 2.0 real host logs; final candidate verification pending |
+| Clean install, reboot continuation, repair, uninstall/reinstall | 51377b5 clean offline install/reboot/resume and same-artifact repair passed in VM; uninstall/reinstall pending; repeat acceptance for final artifact |
 | Upstream-only, companion-only, both, companion99 migration | Policy tests exist; native matrix open |
 | Prior unified upgrade, rollback, downgrade, repeated operations | Protocol implemented and 2.2 version-only fixture built; native two-version matrix open |
 | Missing/damaged driver repair, unknown newer driver preservation | 188 driver and 144 controller checks passed; isolated validation open |

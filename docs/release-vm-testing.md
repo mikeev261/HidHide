@@ -127,3 +127,42 @@ cancellation exit 1602 with an explicit elevation-not-approved message. It keeps
 existing recovery data and does not reclassify later native failures. The
 bootstrapper suite passed 65 checks. This change is not in the installed test
 artifact; maintenance must keep using that exact original artifact.
+
+The VM restarted normally at 21:28:25. The same retry3 EXE resumed once under
+ordinary VMAdmin at 21:30:45 and returned 0 at 21:30:50. Full post-completion
+evidence `retry3-complete-20260908-213150` recorded setup Phase Complete,
+driver Status Committed/Reboot false, no maintenance marker, one visible Burn
+registration, the private MSI, one healthy root device and an available control
+device. Secure Boot remained enabled and the installed SYS matched the pin with
+a valid signature. This establishes the clean offline install/reboot/resume
+cycle for that specific artifact; GUI/profile semantics and the broader matrix
+remain separate gates.
+
+`retry3-license-preboot.json` also proves an environment issue: expired Windows
+Enterprise evaluation (LicenseStatus 5, zero grace) and shutdown events explicitly
+initiated by wlms.exe because its license expired. No activation, time or trust
+changes were made. A separate test VM is being prepared from the user-supplied
+Windows 11 25H2 retail ISO for sustained testing.
+
+Same-artifact repair returned 0 at 21:33:32, without reboot. Evidence
+`retry3-repair-complete-20260908-213406` verified Complete/Committed journals,
+no marker, unchanged application/runtime/driver hashes and unchanged filters.
+Ordinary-user CLI help, version, cloak-state and inv-state all returned 0
+(`gui-smoke2-20260908-213735`); version was 2.1.0.0 and both states were off.
+The GUI launched as PID 6048 in the ordinary user's session and displayed its
+Applications tab with fork version and baseline-applied status. Tab navigation,
+About and normal tray exit were not verified: Computer Use reported the VM
+connection's integrity level was higher than the helper, and input did not work.
+
+An ordinary uninstall with that GUI running closed it through maintenance
+handoff, then exited 1 on declined Windows elevation before native removal.
+`retry3-uninstall-failure-20260908-214222` confirmed the installed product and
+driver remained healthy, with no marker or new journal. This is not an uninstall
+pass. Preserve this state and use the same setup for the next attempt.
+
+The separate `HidHide-Retail-Pro-25H2` VM was created from the supplied ISO
+(SHA-256 `768984706B909479417B2368438909440F2967FF05C6A9195ED2667254E465E3`),
+verified image index 6 / Professional / AMD64 / build 26200. It has Secure Boot,
+vTPM and disconnected networking. Windows Setup is waiting at its normal
+product-key page, with "I don't have a product key" available; no activation or
+licensing workaround was used. Finalized guest baseline is still pending.

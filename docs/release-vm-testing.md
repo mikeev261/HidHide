@@ -106,3 +106,24 @@ bootstrapper PID 8268 and consent PID 4828 live in session 1, awaiting guest UAC
 There was no terminal result. Use `check-51377b5.ps1` and its new timestamped
 output to observe this attempt; do not infer status from older fixed-path logs
 or launch another installer while this handle remains live.
+
+The original candidate attempt and retry1/retry2 subsequently terminated with
+Win32Exception 1223 (Windows elevation cancelled), before installation. Fresh
+inventories remained empty. Their logs are preserved in timestamped
+`candidate-failure-*` evidence folders. A test launcher guard was corrected to
+recognize VMAdmin's enhanced session by its explorer process owner SID; the
+console-only username check had stopped one launch before creating an attempt.
+
+Retry3 of the exact 51377b5 artifact started at 21:25:14 EDT on 2026-09-08,
+under an ordinary VMAdmin token. After both elevation steps, installation
+returned 3010 at 21:26:22. Preboot inventory at 21:27:15 recorded the private
+2.1.0 MSI, one visible Burn product, a healthy root device using oem1.inf and
+driver version 1.4.181, an available control device, and matching setup
+WaitingForReboot / driver RebootRequired journals. Reboot continuation and the
+remaining lifecycle matrix are not yet established by this first-stage result.
+
+Source-side UX hardening now translates only controller launch error 1223 into
+cancellation exit 1602 with an explicit elevation-not-approved message. It keeps
+existing recovery data and does not reclassify later native failures. The
+bootstrapper suite passed 65 checks. This change is not in the installed test
+artifact; maintenance must keep using that exact original artifact.

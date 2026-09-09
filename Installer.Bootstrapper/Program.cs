@@ -161,7 +161,7 @@ public sealed class Application : BootstrapperApplication
             if (CancellationRequested) throw new OperationCanceledException("Setup cancelled before preparation.");
             var connection = pipe.WaitForConnectionAsync();
             preparationStarted = true;
-            var worker = Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "HidHide.SetupController.exe"), "--session " + id.ToString("D") + " " + Process.GetCurrentProcess().Id) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden })!;
+            var worker = ElevationLaunch.Start(() => Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "HidHide.SetupController.exe"), "--session " + id.ToString("D") + " " + Process.GetCurrentProcess().Id) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden })!, resume);
             controller = worker;
             if (!connection.Wait(30000)) throw new TimeoutException("Elevated controller did not connect.");
             connection.GetAwaiter().GetResult();
@@ -221,7 +221,7 @@ public sealed class Application : BootstrapperApplication
         }
         catch (Exception error)
         {
-            exit = error is OperationCanceledException && !preparationStarted ? 1602 : 1;
+            exit = ElevationLaunch.FailureExitCode(error, preparationStarted);
             engine.Log(LogLevel.Error, error.GetType().Name + ": " + error.Message);
             if (progressWindow != null) { progressWindow.Finish(error.Message, false); progressWindow.WaitForClose(); }
             else if (command.Display == Display.Full) MessageBox.Show(error.Message, "HidHide setup could not complete", MessageBoxButtons.OK, MessageBoxIcon.Error);

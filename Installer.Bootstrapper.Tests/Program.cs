@@ -131,4 +131,23 @@ using (var window = new ProgressWindow("repair", true, false))
     Click(window, "Cancel");
     Check(Task.Run(window.WaitForClose).Wait(2000), "legacy completion window closes cleanly");
 }
+foreach (bool recovering in new[] { false, true })
+{
+    int launches = 0;
+    try { ElevationLaunch.Start(() => { launches++; throw new System.ComponentModel.Win32Exception(1223); }, recovering); throw new Exception("UAC refusal accepted"); }
+    catch (ElevationNotApprovedException error)
+    {
+        Check(launches == 1 && ElevationLaunch.FailureExitCode(error, true) == 1602, "only pre-controller UAC refusal returns cancellation after ordinary-user preparation");
+        Check(error.Message.Contains("Elevated setup did not start") && error.Message.Contains("recovery data") == recovering, "elevation message preserves existing recovery context");
+    }
+}
+foreach (int code in new[] { 5, 2, 740 })
+{
+    var original = new System.ComponentModel.Win32Exception(code);
+    try { ElevationLaunch.Start(() => throw original, false); throw new Exception("launch failure accepted"); }
+    catch (System.ComponentModel.Win32Exception error) { Check(ReferenceEquals(error, original) && ElevationLaunch.FailureExitCode(error, true) == 1, "other launch errors retain failure semantics"); }
+}
+Check(ElevationLaunch.FailureExitCode(new System.ComponentModel.Win32Exception(1223), true) == 1, "later native cancellation is never reclassified as declined elevation");
+Check(ElevationLaunch.FailureExitCode(new OperationCanceledException(), true) == 1, "prepared maintenance cancellation retains recovery failure semantics");
+Check(ElevationLaunch.FailureExitCode(new OperationCanceledException(), false) == 1602, "existing early cooperative cancellation retained");
 Console.WriteLine($"{checks} bootstrapper callback/window checks passed; no engine plan/apply or machine mutation.");

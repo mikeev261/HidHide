@@ -3,11 +3,76 @@
 #include "ConfigurationSession.h"
 #include "ProfilePolicy.h"
 #include "../HidHideClient/src/ActiveStateView.h"
+#include "../HidHideClient/src/ManagerActivation.h"
 #include "ConfigurationOwner.h"
 #include <thread>
 #include <functional>
 #include <vector>
 using namespace HidHide;
+namespace
+{
+    UINT const ActivationTestMessage = ::RegisterWindowMessageW(L"HidHide.Tests.ManagerActivation");
+    LRESULT CALLBACK ActivationTestProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        if (message == ActivationTestMessage)
+        {
+            ::SetWindowLongPtrW(window, GWLP_USERDATA, ::GetWindowLongPtrW(window, GWLP_USERDATA) + 1);
+            return ManagerActivation::Acknowledged;
+        }
+        return ::DefWindowProcW(window, message, wParam, lParam);
+    }
+    struct ActivationWindow
+    {
+        HWND window{};
+        ActivationWindow()
+        {
+            WNDCLASSW cls{};
+            cls.lpfnWndProc = ActivationTestProc;
+            cls.hInstance = ::GetModuleHandleW(nullptr);
+            cls.lpszClassName = L"HidHide.Tests.ActivationWindow";
+            ::RegisterClassW(&cls);
+            window = ::CreateWindowExW(0, cls.lpszClassName, L"", 0, 0, 0, 0, 0, nullptr, nullptr, cls.hInstance, nullptr);
+        }
+        ~ActivationWindow() { if (window) ::DestroyWindow(window); }
+    };
+}
+
+TEST(ManagerActivation, AcknowledgedLocalWindowIsOpened)
+{
+    ActivationWindow target;
+    ASSERT_NE(nullptr, target.window);
+    ASSERT_TRUE(::SetPropW(target.window, ManagerActivation::WindowProperty, reinterpret_cast<HANDLE>(1)));
+    EXPECT_TRUE(ManagerActivation::ShowExisting(ActivationTestMessage));
+    EXPECT_EQ(1, ::GetWindowLongPtrW(target.window, GWLP_USERDATA));
+}
+
+TEST(ManagerActivation, UnmarkedWindowIsNotContacted)
+{
+    ActivationWindow target;
+    ASSERT_NE(nullptr, target.window);
+    EXPECT_FALSE(ManagerActivation::ShowExisting(ActivationTestMessage));
+    EXPECT_EQ(0, ::GetWindowLongPtrW(target.window, GWLP_USERDATA));
+}
+
+TEST(ManagerActivation, UnacknowledgedWindowDoesNotReportSuccess)
+{
+    ActivationWindow target;
+    ASSERT_NE(nullptr, target.window);
+    ASSERT_TRUE(::SetPropW(target.window, ManagerActivation::WindowProperty, reinterpret_cast<HANDLE>(1)));
+    EXPECT_FALSE(ManagerActivation::ShowExisting(::RegisterWindowMessageW(L"HidHide.Tests.UnhandledActivation")));
+}
+
+TEST(ManagerActivation, OtherSessionOrUserDoesNotQualify)
+{
+    DWORD session{};
+    ASSERT_TRUE(::ProcessIdToSessionId(::GetCurrentProcessId(), &session));
+    auto const sid = Channel::CurrentSid();
+    EXPECT_TRUE(ManagerActivation::SameOwner(::GetCurrentProcessId(), session, sid));
+    EXPECT_FALSE(ManagerActivation::SameOwner(::GetCurrentProcessId(), session + 1, sid));
+    EXPECT_FALSE(ManagerActivation::SameOwner(::GetCurrentProcessId(), session, L"S-1-5-18"));
+    EXPECT_FALSE(ManagerActivation::SameOwner(0, session, sid));
+}
+
 namespace
 {
     struct MemoryBackend : ConfigurationBackend

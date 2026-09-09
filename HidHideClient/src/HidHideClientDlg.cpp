@@ -7,6 +7,7 @@
 #include "FilterDriverProxy.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "ManagerActivation.h"
 #include <winver.h>
 #pragma comment(lib, "version.lib")
 
@@ -188,6 +189,8 @@ BOOL CHidHideClientDlg::OnInitDialog()
     if (auto const result = ::CM_Register_Notification(&filter, m_hWnd, &DevicesChanged, &m_DeviceNotification); result != CR_SUCCESS)
         THROW_CONFIGRET(result);
 
+    if (!::SetPropW(m_hWnd, HidHide::ManagerActivation::WindowProperty, reinterpret_cast<HANDLE>(1)))
+        THROW_WIN32_LAST_ERROR;
     return (TRUE);
 }
 
@@ -410,6 +413,7 @@ void CHidHideClientDlg::OnOK()
 
 void CHidHideClientDlg::OnDestroy()
 {
+    ::RemovePropW(m_hWnd, HidHide::ManagerActivation::WindowProperty);
     if (m_DeviceNotification)
     {
         ::CM_Unregister_Notification(m_DeviceNotification);
@@ -470,7 +474,7 @@ LRESULT CHidHideClientDlg::OnHideAfterStart(WPARAM wParam, LPARAM lParam)
 {
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
-    ShowWindow(SW_HIDE);
+    if (m_StartHidden) ShowWindow(SW_HIDE);
     return 0;
 }
 
@@ -479,8 +483,9 @@ LRESULT CHidHideClientDlg::OnShowManager(WPARAM wParam, LPARAM lParam)
 {
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
+    m_StartHidden = false;
     ShowFromTray();
-    return 0;
+    return HidHide::ManagerActivation::Acknowledged;
 }
 
 _Use_decl_annotations_

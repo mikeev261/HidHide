@@ -8,6 +8,7 @@
 #include "Utils.h"
 #include "Logging.h"
 #include "ConfigurationChannel.h"
+#include "ManagerActivation.h"
 
 CHidHideClientApp theApp;
 
@@ -147,8 +148,8 @@ BOOL CHidHideClientApp::InitInstance()
     }
     if (!owner->Acquired())
     {
-        if (!startHidden) ::PostMessageW(HWND_BROADCAST, WM_HIDHIDE_SHOW_MANAGER, 0, 0);
-        if (!startHidden) ::MessageBoxW(nullptr, L"The configuration coordinator is already running, possibly in another Windows session. Only one session can own automatic profiles.", L"HidHide App Profiles", MB_OK | MB_ICONINFORMATION);
+        if (!startHidden && !HidHide::ManagerActivation::ShowExisting(WM_HIDHIDE_SHOW_MANAGER))
+            ::MessageBoxW(nullptr, L"The configuration coordinator is already running but could not be opened in this Windows session. It may be starting or owned by another session. Try again shortly or open it from its tray icon.", L"HidHide App Profiles", MB_OK | MB_ICONINFORMATION);
         return FALSE;
     }
 

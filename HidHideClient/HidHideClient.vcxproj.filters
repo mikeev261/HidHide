@@ -23,6 +23,7 @@
     </ClInclude>
     <ClInclude Include="src\ConfigurationUi.h" />
     <ClInclude Include="src\ActiveStateView.h" />
+    <ClInclude Include="src\ManagerActivation.h" />
     <ClInclude Include="src\PendingDeviceRefresh.h" />
     <ClInclude Include="src\AppProfilesDlg.h">
       <Filter>Header Files</Filter>

@@ -3,6 +3,8 @@
 Current phase: 7–8, release implementation and validation. Goal: release-ready unified Windows 11 x64 setup. Not achieved yet.
 User explicitly accepts an unsigned public setup; driver signatures remain unchanged. No automatic publishing or trust changes.
 
+Latest user scope (2026-09-08 evening): practical, generally working personal-use release; exhaustive edge-case validation deferred. User cancelled VM testing and requested local-PC testing. Current local checkpoint is artifacts/local-validation-20260908/RESUME-AFTER-REBOOT.md. Normal removal of the local 2.0 preview returned3010; reboot and same-setup continuation are required before installing the new clean59c03f2 candidate. Preserve settings and all journals. The VM plans below are historical pending work, not the current next action.
+
 ## Current state and evidence
 
 Host has 2.0.0 development package artifacts/lifecycle-gui-fixed installed, healthy pinned driver, no maintenance marker. Normal tray exit completed. See [native evidence](native-lifecycle-testing.md) before host mutations.

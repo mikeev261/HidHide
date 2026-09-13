@@ -5,6 +5,7 @@
 #include "CommandInterpreter.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "MaintenanceSession.h"
 
 namespace
 {
@@ -15,7 +16,10 @@ namespace
         try
         {
             TRACE_ALWAYS(L"");
-            HidHide::CommandInterpreter(false).Start(HidHide::CommandLineArguments());
+            if (__argc == 2 && std::wstring(__wargv[1]) == L"--maintenance-session")
+                HidHide::RunMaintenanceSession();
+            else
+                HidHide::CommandInterpreter(false).Start(HidHide::CommandLineArguments());
             return (ERROR_SUCCESS);
         }
         catch (std::exception const& exc)

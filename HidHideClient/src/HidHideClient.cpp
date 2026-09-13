@@ -7,6 +7,8 @@
 #include "FilterDriverProxy.h"
 #include "Utils.h"
 #include "Logging.h"
+#include "ConfigurationChannel.h"
+#include "ManagerActivation.h"
 
 CHidHideClientApp theApp;
 
@@ -126,7 +128,32 @@ BOOL CHidHideClientApp::InitInstance()
     CMFCVisualManager::SetDefaultManager(RUNTIME_CLASS(CMFCVisualManagerWindows));
 
     // We can't do anything when the control device isn't present so allow for a retry on failure
-    CHidHideClientDlg dlg(nullptr);
+    bool startHidden{};
+    for (int index = 1; index < __argc; index++)
+        startHidden = startHidden || (0 == _wcsicmp(__wargv[index], L"--background"));
+
+    // Keep ownership until the modal dialog and its profile manager are destroyed.
+    // A namespace-static lease would be destroyed before the earlier global app
+    // object, making any release from the app destructor a use-after-destruction.
+    std::unique_ptr<HidHide::Channel::Lease> owner;
+    try
+    {
+        HidHide::Maintenance::Admission admission;
+        owner = std::make_unique<HidHide::Channel::Lease>();
+    }
+    catch (std::exception const& error)
+    {
+        if (!startHidden) ::MessageBoxA(nullptr, error.what(), "HidHide ownership", MB_OK | MB_ICONERROR);
+        return FALSE;
+    }
+    if (!owner->Acquired())
+    {
+        if (!startHidden && !HidHide::ManagerActivation::ShowExisting(WM_HIDHIDE_SHOW_MANAGER))
+            ::MessageBoxW(nullptr, L"The configuration coordinator is already running but could not be opened in this Windows session. It may be starting or owned by another session. Try again shortly or open it from its tray icon.", L"HidHide App Profiles", MB_OK | MB_ICONINFORMATION);
+        return FALSE;
+    }
+
+    CHidHideClientDlg dlg(nullptr, startHidden);
     m_pMainWnd = &dlg;
 
     // We use exception handling so catch it at top-level and bail out

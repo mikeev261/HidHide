@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net48</TargetFramework><LangVersion>latest</LangVersion><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget><AssemblyName>HidHide.Bootstrapper</AssemblyName></PropertyGroup>
+<ItemGroup><PackageReference Include="WixToolset.BootstrapperApplicationApi" Version="5.0.2"/><Reference Include="System.Windows.Forms"/><Reference Include="System.Drawing"/><Compile Include="../Installer.Controller/ReadySnapshot.cs" Link="ReadySnapshot.cs"/><Compile Include="../Installer.Controller/SessionWire.cs" Link="SessionWire.cs"/><Compile Include="../Installer.Controller/MaintenanceClient.cs" Link="MaintenanceClient.cs"/></ItemGroup>
+<ItemGroup><Compile Include="../Installer.Controller/UpgradeProtocol.cs" Link="UpgradeProtocol.cs"/><Compile Include="../Installer.Controller/SetupPipeSecurity.cs" Link="SetupPipeSecurity.cs"/></ItemGroup>
+<ItemGroup><Compile Include="../Installer.Controller/PublicDiagnostic.cs" Link="PublicDiagnostic.cs"/></ItemGroup>
+</Project>

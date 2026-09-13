@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net48</TargetFramework><LangVersion>latest</LangVersion><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Installer.Bootstrapper/HidHide.Bootstrapper.csproj"/><Reference Include="System.Windows.Forms"/></ItemGroup>
+</Project>

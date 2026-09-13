@@ -1,19 +1,6 @@
-> [!WARNING]
-> **No other official website exists** for this project besides this GitHub repository (github.com/nefarius/HidHide) and sites hosted on `*.nefarius.at` (e.g. docs.nefarius.at, discord.nefarius.at).
->
-> **Anyone claiming otherwise is a scammer and a fraud.** Do not trust other websites, download links, or people claiming to represent this project. Please be wary and only use the sources listed above.
+# <img src="assets/hidhide-128x128.png" align="left" />HidHide (mikeev261 fork)
 
----
-
-# <img src="assets/hidhide-128x128.png" align="left" />HidHide
-
-[![Build status](https://ci.appveyor.com/api/projects/status/s3t4ffx5fnfw5g65/branch/master?svg=true)](https://ci.appveyor.com/project/nefarius/hidhide/branch/master)
-[![GitHub All Releases](https://img.shields.io/github/downloads/nefarius/HidHide/total)](https://somsubhra.github.io/github-release-stats/?username=nefarius&repository=HidHide)
-[![Chocolatey package](https://img.shields.io/chocolatey/dt/hidhide?color=blue&label=chocolatey)](https://community.chocolatey.org/packages/hidhide)
-![GitHub issues by-label](https://img.shields.io/github/issues/nefarius/HidHide/bug)
-![GitHub issues by-label](https://img.shields.io/github/issues/nefarius/HidHide/enhancement)
-
-Gaming Input Peripherals Device Firewall for Windows.
+One Windows 11 x64 setup for enhanced HidHide configuration, resident App Profiles, CLI, and the unchanged Microsoft-signed upstream driver. The unified package is undergoing release validation; see [current status](docs/unified-package-progress.md), [installation layout](INSTALL_LAYOUT.md), and [build instructions](BUILD_AND_RELEASE.md).
 
 ## Introduction
 
@@ -46,10 +33,7 @@ multiple notifications while binding game functions and device controls.
 
 ## Package content
 
-*HidHide* is a kernel-mode filter driver available for **Windows 10** or higher (KMDF 1.13+). It comes with a configuration
-utility via which the driver is configured and controlled. The filter driver starts automatically and runs unattended
-with system privileges. A system reboot may be triggered after driver installation or removal. The configuration utility
-runs in the least privileged mode and doesn't require elevated rights.
+The Burn setup owns one private MSI containing `HidHideClient.exe`, `HidHideCLI.exe`, app-local runtimes and the verified driver package under `%ProgramFiles%\HidHide\`. It manages driver installation, repair and removal and presents one Installed Apps entry. Start setup normally and approve elevation when requested; the configuration utility runs without elevated rights. Existing companion-only instructions are superseded.
 
 ## User guide
 
@@ -59,7 +43,7 @@ The configuration utility allows you to:
 - Specify which applications may look through the cloak
 - Specify the human interface devices that should be hidden from ordinary applications
 
-The main dialog of the configuration utility offers two main tabs.
+The main dialog of the configuration utility offers three main tabs.
 ![Screen capture of applications tab](/README/DlgApplications.jpg)
 
 The *Applications* tab shows all white-listed applications that are allowed access to the hidden devices. Typically listed
@@ -90,11 +74,61 @@ Access to the underlying driver will be blocked when a device only has composite
 
 The expanded list may mark entries as *absent* or *denied*. *absent* entries appear when the device characteristics are altered.
 These are residual entries in the caches of the operating system, and can be cleaned-up using utilities like *Device Cleanup Tool*.
-*denied* entries appear for hidden devices when the configuration utility itself is not whilelisted.
+*denied* entries appear for hidden devices when the configuration utility itself is not whitelisted.
+
+The *App Profiles* tab adds hidden devices when it detects a configured executable running. Automatic detection is
+**best effort**; it does not guarantee hiding before an application opens a device. Add an executable
+with *+* (or drag it onto the tab) and select the physical devices to hide. Closing the window leaves the profile manager
+running in the notification area; use its tray menu to reopen it or exit and restore the normal Devices-tab configuration.
+After the manager has run with profiles configured, it starts automatically at sign-in. If profiles were created with the
+CLI while the manager was absent, open the manager once to register autostart. If multiple profiled applications run at the
+same time, their selected devices are combined. This user-mode design reuses the unchanged Microsoft-signed
+HidHide driver and remains compatible with Secure Boot.
+
+The signed driver exposes a single global hidden-device list, so an active profile temporarily affects every non-whitelisted
+application, not only the executable that activated it. The manager preserves the normal device list, adds active-profile
+devices to it, restores it when the last profile exits, and records recovery data before each override. An application on
+the *Applications* whitelist retains access to every hidden device unless inverse-whitelist mode is enabled.
+
+The Devices tab and CLI edit your normal baseline selections, even while a profile is active. The hiding checkbox shows
+the effective driver state. Turning hiding off suspends automatic profiles until you choose *Resume automatic profiles*
+from the tray menu; this pause survives a restart. *Pause automatic profiles and restore baseline* restores your normal
+settings without changing your saved enabled preference.
+
+The CLI works while the manager is resident. Only one configuration coordinator can run across Windows sessions. Another
+configuration utility can access the driver between transactions; if it changes settings during an override, the manager
+reports a conflict and stops applying profiles. *Resolve conflict: accept current driver settings* preserves those actual
+settings as your new baseline and leaves profiles paused. The old restoration claim is discarded only by that explicit
+action. Failed or uncertain restoration retains recovery data; an exit requesting restoration reports the failure.
+
+Automatic detection is best effort. It does not guarantee that hiding is applied before a game opens a device, or that
+already-open handles lose access. Read-only CLI queries do not automatically whitelist the CLI executable.
+
+For reliable hiding at application startup, select the physical devices permanently on the *Devices* tab, turn on
+*Enable device hiding*, and whitelist feeder utilities on *Applications* (with inverse mode off) **before starting the
+game**. Keep the game off the whitelist. Reconnect devices after configuration changes as directed on the Devices tab.
+Profiles supplement these permanent selections; they do not replace them.
+
+The manager scans processes approximately every 500 ms and consumes results on a 100 ms UI timer. These intervals are
+not a deadline: scheduling, configuration dialogs, and errors can delay application of a detected profile. Starting the
+manager first, automatic sign-in startup, or a profile showing *Running* does not establish that hiding preceded a game's
+first device open. The repository driver checks access at device-open time and does not revoke already-open handles.
+An application that opened a controller before hiding took effect can therefore retain access. Close that application,
+configure permanent hiding, and then restart it; waiting for detection does not repair an existing handle. There is no
+apply-profile-then-launch workflow in this client.
+
+This activation contract is based on source inspection, not live verification against an installed signed driver.
+The [manual validation procedure](testing/app-profile-activation.md) covers startup ordering and retained handles;
+validation on the supported installed signed driver remains outstanding.
+
+Physical devices are the primary rows in the profile tree. Expand one only when interface-level control is needed. The
+*Gaming devices only* filter is enabled by default, disconnected devices are hidden by default, and selections excluded by
+either filter are preserved. Executable and device labels include path, serial, or instance details when names would
+otherwise be ambiguous.
 
 ## Package integration
 
-Installation packages and third-party applications can rely on the following two registry keys.
+The unchanged upstream driver exposes the following registry keys; these are distinct from unified installer registration.
 *"HKCR\Installer\Dependencies\NSS.Drivers.HidHide.x64\Version"* signals the availability of HidHide and its version.
 *"HKCR\SOFTWARE\Nefarius Software Solutions e.U.\Nefarius Software Solutions e.U. HidHide\Path"* tells its location.
 
@@ -112,7 +146,7 @@ Contact us [through Discord](https://discord.nefarius.at/)!
 
 ---
 
-*HidHide* provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
+The HidHide driver provides both logging and tracing. Logging can be found the *Event Viewer* under *Windows Logs* and *System*.
 Tracing can be found under *Applications and Services Logs* and *Nefarius* after enabling *Show Analytic and Debug Logs*.
 Extended tracing is available but switched off per default for performance reasons. Tracing is controlled using the *wevtutil* utility
 which is an integral part of the operating system. To enable extended tracing, open a command shell, and enter the following;

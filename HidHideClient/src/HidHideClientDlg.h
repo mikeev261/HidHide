@@ -6,6 +6,10 @@
 #include "BlacklistDlg.h"
 #include "WhitelistDlg.h"
 #include "AppProfilesDlg.h"
+#include "ProfileManager.h"
+#include "ConfigurationChannel.h"
+
+extern UINT const WM_HIDHIDE_SHOW_MANAGER;
 
 class CHidHideClientDlg : public CDialogEx, public HidHide::IDropTarget
 {
@@ -17,11 +21,17 @@ public:
     CHidHideClientDlg& operator=(_In_ CHidHideClientDlg const& rhs) = delete;
     CHidHideClientDlg& operator=(_In_ CHidHideClientDlg&& rhs) = delete;
 
-    explicit CHidHideClientDlg(_In_opt_ CWnd* pParent);
+    explicit CHidHideClientDlg(_In_opt_ CWnd* pParent, _In_ bool startHidden = false);
     virtual ~CHidHideClientDlg() = default;
 
     // Allow child dialogs access to the shared filter driver proxy
     HidHide::FilterDriverProxy& FilterDriverProxy() noexcept;
+    bool ProfileIsActive(_In_ HidHide::FullImageName const& profile) const noexcept;
+    bool ProfileIsUnresolved(HidHide::FullImageName const& profile) const noexcept;
+    HidHide::DeviceInstancePaths Baseline();
+    void EditBaseline(HidHide::DeviceInstancePaths const& displayed, HidHide::DeviceInstancePaths const& requested);
+    void SetEnabled(bool displayed, bool requested);
+    bool EffectiveHidingEnabled() const;
 
 private:
 
@@ -76,11 +86,15 @@ private:
 
     void DoDataExchange(_In_ CDataExchange* pDX) override;
     BOOL OnInitDialog() override;
+    void OnCancel() override;
+    void OnOK() override;
 
     DECLARE_MESSAGE_MAP()
 
     // Acquire exclusive access to the filter driver
     std::unique_ptr<HidHide::FilterDriverProxy> m_FilterDriverProxy;
+    std::unique_ptr<CProfileManager> m_ProfileManager;
+    std::unique_ptr<HidHide::Channel::Server> m_ConfigurationServer;
 
     // Drop file support
     CDropTarget m_DropTarget;
@@ -92,14 +106,33 @@ private:
     CWhitelistDlg   m_WhitelistDlg;
     CAppProfilesDlg m_AppProfilesDlg;
 
-    // Saved state for App Profiles timer
-    HidHide::DeviceInstancePaths m_SavedBlacklist;
-    bool m_SavedActiveState{ false };
+    HCMNOTIFICATION m_DeviceNotification{};
+    NOTIFYICONDATAW m_NotifyIcon{};
+    bool m_StartHidden{};
+    bool m_Exiting{};
+    bool m_MaintenancePrepared{};
+    bool m_HideNoticeShown{};
+    size_t m_LastTrayProfileCount{ static_cast<size_t>(-1) };
+    std::wstring m_LastStatus;
+
+    void AddTrayIcon();
+    void RemoveTrayIcon() noexcept;
+    void HideToTray();
+    void ShowFromTray();
+    void UpdateTrayTooltip();
 
     // Events
     afx_msg void OnPaint();
     afx_msg HCURSOR OnQueryDragIcon();
     afx_msg void OnTcnSelchangeTabApplication(_In_ NMHDR* pNMHDR, _Out_ LRESULT* pResult);
     afx_msg void OnShowWindow(_In_ BOOL bShow, _In_ UINT nStatus);
-    afx_msg void OnTimer(UINT_PTR nIDEvent);
+    afx_msg void OnTimer(_In_ UINT_PTR nIDEvent);
+    afx_msg void OnClose();
+    afx_msg void OnDestroy();
+    afx_msg void OnSysCommand(UINT id, LPARAM parameter);
+    afx_msg LRESULT OnDevicesChanged(WPARAM, LPARAM);
+    afx_msg LRESULT OnTrayIcon(_In_ WPARAM wParam, _In_ LPARAM lParam);
+    afx_msg LRESULT OnHideAfterStart(_In_ WPARAM wParam, _In_ LPARAM lParam);
+    afx_msg LRESULT OnShowManager(_In_ WPARAM wParam, _In_ LPARAM lParam);
+    afx_msg LRESULT OnTaskbarCreated(_In_ WPARAM wParam, _In_ LPARAM lParam);
 };

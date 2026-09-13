@@ -1,33 +1,24 @@
 using System.Diagnostics;
-using System.Globalization;
 using IOFile = System.IO.File;
 using WixSharp;
 
 namespace HidHide.Installer;
 
 /// <summary>
-/// Builds HidHide.msi via WixSharp targeting WiX 5 (same package family as WinDbgSymbolsCachingProxy.Installer).
-/// Managed hooks install/remove the driver via <c>nefconw.exe</c> (<see href="https://github.com/nefarius/nefcon">nefcon</see>,
-/// windowless), ETW via wevtutil. Class GUIDs match Watchdog/App.cpp.
+/// Builds the Secure-Boot-compatible HidHide App Profiles companion MSI.
+/// The package installs only user-mode tools and deliberately leaves the separately installed,
+/// Microsoft-signed HidHide driver untouched.
 /// </summary>
 public static class Program
 {
-    const string Manufacturer = "Nefarius Software Solutions";
+    const string Manufacturer = "mikeev261";
 
-    /// <summary>SETUPAPI GUID_DEVCLASS_HIDCLASS</summary>
-    const string ClassGuidHid = "{745a17a0-74d3-11d0-b6fe-00a0c90f57da}";
-
-    /// <summary>GUID_DEVCLASS_XNACOMPOSITE — Watchdog/App.cpp</summary>
-    const string ClassGuidXnaComposite = "{d61ca365-5af4-4486-998b-9db4734c6ca3}";
-
-    /// <summary>GUID_DEVCLASS_XBOXCOMPOSITE — Watchdog/App.cpp</summary>
-    const string ClassGuidXboxComposite = "{05f5cfe2-4733-4950-a6bb-07aad01a3a84}";
-
-    /// <summary>ERROR_SUCCESS_REBOOT_REQUIRED — nefcon may return this; treat as success for setup.</summary>
-    const int ExitSuccessRebootRequired = 3010;
-
-    /// <summary>Must match dep:Provides Key suffix expectations / upgrade story.</summary>
-    static readonly Guid UpgradeCode = new("8822CC70-E2A5-4CB7-8F14-E27101150A1D");
+    /// <summary>
+    /// Identifies only the user-mode companion product family. This must never match
+    /// the official HidHide package, or MSI major-upgrade detection will uninstall
+    /// the signed driver package while installing the companion.
+    /// </summary>
+    static readonly Guid UpgradeCode = new("7078E839-3A07-4FA9-BC3A-7677356C88CF");
 
     internal const string EnvStaging = "HIDHIDE_INSTALLER_STAGING";
     internal const string EnvOut = "HIDHIDE_INSTALLER_OUT";
@@ -36,6 +27,15 @@ public static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--inspect-installed")
+            {
+                var version = ProductContract.ReadVersion(Path.Combine(AppContext.BaseDirectory, "ProductVersion.props"));
+                foreach (var product in InstalledProducts.Detect(version))
+                    Console.WriteLine($"{product.Family:B} | {product.Product:B} | {product.Version} | {product.Operation} | {product.CachedPackage}");
+                foreach (var deviceClass in DriverFilters.Classes)
+                    Console.WriteLine($"UpperFilters {deviceClass:B}: {string.Join(", ", DriverFilters.Read(deviceClass))}");
+                return 0;
+            }
             var options = Options.Parse(args);
             options.Validate();
 
@@ -43,24 +43,14 @@ public static class Program
             if (!IOFile.Exists(licensePath))
                 throw new FileNotFoundException($"License file not found: {licensePath}");
 
-            string installRel = @"%ProgramFiles64Folder%\Nefarius Software Solutions\HidHide";
+            string installRel = options.Unified ? @"%ProgramFiles64Folder%\HidHide" : @"%ProgramFiles64Folder%\HidHide App Profiles";
             // Must be a root-level Dir sibling of the install tree (WiX 5 / WIX0094); see WixSharp #1727, #1855.
-            const string startMenuRel = @"%ProgramMenu%\Nefarius Software Solutions\HidHide";
+            string startMenuRel = options.Unified ? @"%ProgramMenu%\HidHide" : @"%ProgramMenu%\HidHide App Profiles";
             string sd = options.StagingDir;
             var installDir = new Dir(
                 installRel,
-                new WixSharp.File(Path.Combine(sd, "HidHide.cat")),
-                new WixSharp.File(Path.Combine(sd, "nefconw.exe")),
-                new WixSharp.File(Path.Combine(sd, "HidHide.inf")),
-                new WixSharp.File(Path.Combine(sd, "HidHide.sys")),
-                new WixSharp.File(Path.Combine(sd, "HidHide.man")),
-                new WixSharp.File(Path.Combine(sd, "HidHide.wprp")),
                 new WixSharp.File(Path.Combine(sd, "HidHideClient.exe")),
-                new WixSharp.File(Path.Combine(sd, "HidHideClient.man")),
-                new WixSharp.File(Path.Combine(sd, "HidHideClient.wprp")),
-                new WixSharp.File(Path.Combine(sd, "HidHideCLI.exe")),
-                new WixSharp.File(Path.Combine(sd, "HidHideCLI.man")),
-                new WixSharp.File(Path.Combine(sd, "HidHideCLI.wprp")))
+                new WixSharp.File(Path.Combine(sd, "HidHideCLI.exe")))
             {
                 IsInstallDir = true,
             };
@@ -68,7 +58,7 @@ public static class Program
             var startMenuDir = new Dir(
                 startMenuRel,
                 new ExeFileShortcut(
-                    "HidHide Configuration Client",
+                    options.Unified ? ProductContract.Name : "HidHide App Profiles",
                     @"[INSTALLDIR]HidHideClient.exe",
                     "")
                 {
@@ -76,7 +66,7 @@ public static class Program
                 });
 
             var project = new ManagedProject(
-                "HidHide",
+                "HidHide App Profiles",
                 installDir,
                 startMenuDir)
             {
@@ -88,17 +78,16 @@ public static class Program
                 LicenceFile = licensePath,
                 Version = ReadProductVersion(Path.Combine(options.StagingDir, "HidHideClient.exe")),
                 OutDir = options.OutputDir,
-                OutFileName = "HidHide",
+                OutFileName = "HidHideAppProfiles",
             };
 
             project.ControlPanelInfo.Manufacturer = Manufacturer;
+            if (options.Unified) UnifiedPreview.Configure(project, installDir, options.DriverPayload);
 
             // Align with WiX 5.x + WixToolset.UI.wixext/5.0.x; WiX 6 defaults are not compatible with WixSharp + WixUI without tweaks.
             WixExtension.UI.PreferredVersion = "5.0.2";
 
-            project.BeforeInstall += OnBeforeInstall;
-            project.AfterInstall += OnAfterInstall;
-
+            ReleaseSigning.Configure(project);
             string msiPath = project.BuildMsi();
             Console.WriteLine(msiPath);
             return 0;
@@ -111,129 +100,14 @@ public static class Program
         }
     }
 
-    public static void OnBeforeInstall(SetupEventArgs e)
-    {
-        if (!e.IsUninstalling)
-            return;
-
-        string root = InstallRoot(e);
-        string nefcon = Path.Combine(root, "nefconw.exe");
-        string wevt = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "wevtutil.exe");
-
-        TryRun(nefcon, $"--remove-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXboxComposite}");
-        TryRun(nefcon, $"--remove-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXnaComposite}");
-        TryRun(nefcon, $"--remove-class-filter --position upper --service-name HidHide --class-guid {ClassGuidHid}");
-        TryRun(nefcon, @"remove ""root\HidHide""");
-
-        TryRun(wevt, $@"um ""{Path.Combine(root, "HidHideCLI.man")}""");
-        TryRun(wevt, $@"um ""{Path.Combine(root, "HidHideClient.man")}""");
-        TryRun(wevt, $@"um ""{Path.Combine(root, "HidHide.man")}""");
-    }
-
-    public static void OnAfterInstall(SetupEventArgs e)
-    {
-        if (e.IsUninstalling)
-            return;
-
-        string root = InstallRoot(e);
-        string nefcon = Path.Combine(root, "nefconw.exe");
-        string wevt = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "wevtutil.exe");
-        string infPath = Path.Combine(root, "HidHide.inf");
-
-        // Devcon-compatible install (see nefcon readme); --remove-duplicates requires nefcon v1.17.40+.
-        TryRun(nefcon, $@"install ""{infPath}"" ""root\HidHide"" --no-duplicates --remove-duplicates");
-        TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidHid}");
-        TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXnaComposite}");
-        TryRun(nefcon, $"--add-class-filter --position upper --service-name HidHide --class-guid {ClassGuidXboxComposite}");
-
-        Run(wevt, $@"im ""{Path.Combine(root, "HidHide.man")}""");
-        Run(wevt, $@"im ""{Path.Combine(root, "HidHideClient.man")}""");
-        Run(wevt, $@"im ""{Path.Combine(root, "HidHideCLI.man")}""");
-    }
-
-    static string InstallRoot(SetupEventArgs e)
-    {
-        string d = e.InstallDir?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                   ?? throw new InvalidOperationException("INSTALLDIR missing.");
-        return d;
-    }
-
-    static void Run(string path, string args)
-    {
-        using var p = Process.Start(new ProcessStartInfo(path, args)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        });
-        if (p is null)
-            throw new InvalidOperationException($"Failed to start: {path}");
-
-        // Drain stdout/stderr while the process runs to avoid deadlocks with RedirectStandardOutput/RedirectStandardError.
-        var stdoutTask = p.StandardOutput.ReadToEndAsync();
-        var stderrTask = p.StandardError.ReadToEndAsync();
-
-        p.WaitForExit();
-        System.Threading.Tasks.Task.WaitAll(stdoutTask, stderrTask);
-
-        if (p.ExitCode != 0 && p.ExitCode != ExitSuccessRebootRequired)
-            throw new InvalidOperationException(
-                $"{path} {args} exited with code {p.ExitCode}. stderr: {stderrTask.Result}");
-    }
-
-    /// <summary>Matches legacy MSI Return="ignore" optional class-filter actions.</summary>
-    static void TryRun(string path, string args)
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo(path, args)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            p?.WaitForExit();
-        }
-        catch
-        {
-            // ignored
-        }
-    }
-
     static Version ReadProductVersion(string clientExe)
     {
-        if (!IOFile.Exists(clientExe))
-            return new Version(1, 0, 0, 0);
+        var version = ProductContract.ReadVersion(Path.Combine(AppContext.BaseDirectory, "ProductVersion.props"));
+        if (!IOFile.Exists(clientExe)) throw new FileNotFoundException("Missing versioned client", clientExe);
         var info = FileVersionInfo.GetVersionInfo(clientExe);
-        string? raw = info.ProductVersion ?? info.FileVersion;
-        return TryParseVersion(raw, out Version? v) && v is not null ? v : new Version(1, 0, 0, 0);
-    }
-
-    static bool TryParseVersion(string? raw, out Version? version)
-    {
-        version = null;
-        if (raw is null || string.IsNullOrWhiteSpace(raw))
-            return false;
-        string numeric = raw.Split(new[] { '+' }, 2, StringSplitOptions.None)[0]
-            .Split(new[] { '-' }, 2, StringSplitOptions.None)[0].Trim();
-        string[] parts = numeric.Split('.');
-        try
-        {
-            int major = parts.Length > 0 ? int.Parse(parts[0], CultureInfo.InvariantCulture) : 0;
-            int minor = parts.Length > 1 ? int.Parse(parts[1], CultureInfo.InvariantCulture) : 0;
-            int build = parts.Length > 2 ? int.Parse(parts[2], CultureInfo.InvariantCulture) : 0;
-            int revision = parts.Length > 3 ? int.Parse(parts[3], CultureInfo.InvariantCulture) : 0;
-            version = new Version(major, minor, build, revision);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        if (ProductContract.ParseVersion(info.ProductVersion ?? "") != version || ProductContract.ParseVersion(info.FileVersion ?? "") != version)
+            throw new InvalidDataException("Staged executable version disagrees with ProductVersion.props.");
+        return version;
     }
 
     sealed class Options
@@ -241,6 +115,8 @@ public static class Program
         public string StagingDir { get; }
         public string OutputDir { get; }
         public Platform Platform { get; }
+        public bool Unified { get; private set; }
+        public string DriverPayload { get; private set; } = "";
 
         Options(string stagingDir, string outputDir, Platform platform)
         {
@@ -255,6 +131,8 @@ public static class Program
             string staging = Path.GetFullPath(Path.Combine(cwd, "staging"));
             string output = Path.GetFullPath(Path.Combine(cwd, "msi-out"));
             string arch = "x64";
+            bool unified = false;
+            string driverPayload = "";
 
             ApplyEnvironmentOverrides(ref staging, ref output);
 
@@ -267,6 +145,8 @@ public static class Program
                     output = RequirePath(args, ref i, "out");
                 else if (a is "--platform" or "-p")
                     arch = RequireArg(args, ref i, "platform");
+                else if (a == "--unified-preview") unified = true;
+                else if (a == "--driver-payload") driverPayload = RequirePath(args, ref i, "driver-payload");
                 else if (a is "--help" or "-h")
                     PrintHelp();
                 else
@@ -285,7 +165,7 @@ public static class Program
             return new Options(
                 staging,
                 output,
-                platform);
+                platform) { Unified = unified, DriverPayload = driverPayload };
         }
 
         static void ApplyEnvironmentOverrides(ref string staging, ref string output)
@@ -319,17 +199,19 @@ public static class Program
         {
             Console.WriteLine(
                 """
-                HidHide — MSI builder (WixSharp / WiX 5)
+                HidHide App Profiles — companion MSI builder (WixSharp / WiX 5)
 
                 Options:
                   --staging, -s   Flat folder with all payload files (see INSTALL_LAYOUT.md)
                   --out, -o       MSI output directory
                   --platform, -p  x64 | ARM64 (default: x64)
+                  --unified-preview Build the guarded private MSI development preview
+                  --driver-payload Verified INF/SYS/CAT/license folder for the preview
 
                 Environment (optional):
                   HIDHIDE_INSTALLER_STAGING, HIDHIDE_INSTALLER_OUT
 
-                Staging must include nefconw.exe (windowless) from nefcon v1.17.40 or newer.
+                Staging must include HidHideClient.exe and HidHideCLI.exe.
 
                 Requires Windows, WiX 5.0.2 global tool + WixToolset.UI.wixext/5.0.2:
                   dotnet tool install --global wix --version 5.0.2
@@ -340,6 +222,9 @@ public static class Program
 
         public void Validate()
         {
+            if (Unified && (Platform != Platform.x64 || string.IsNullOrEmpty(DriverPayload)))
+                throw new ArgumentException("Unified preview requires x64 and --driver-payload pointing to the verified signed package.");
+            if (Unified) HidHide.DriverSetup.Payload.Verify(DriverPayload);
             if (!Directory.Exists(StagingDir))
                 throw new DirectoryNotFoundException($"Staging directory not found: {StagingDir}");
 
@@ -348,6 +233,8 @@ public static class Program
                 string p = Path.Combine(StagingDir, name);
                 if (!IOFile.Exists(p))
                     throw new FileNotFoundException($"Staging payload incomplete; missing: {p}");
+                ExecutableArchitecture.Require(p, Platform == Platform.arm64);
+                ReadProductVersion(p);
             }
 
             Directory.CreateDirectory(OutputDir);
@@ -355,18 +242,8 @@ public static class Program
 
         static readonly string[] RequiredPayloadFiles =
         [
-            "HidHide.cat",
-            "nefconw.exe",
-            "HidHide.inf",
-            "HidHide.sys",
-            "HidHide.man",
-            "HidHide.wprp",
             "HidHideClient.exe",
-            "HidHideClient.man",
-            "HidHideClient.wprp",
             "HidHideCLI.exe",
-            "HidHideCLI.man",
-            "HidHideCLI.wprp",
         ];
     }
 }

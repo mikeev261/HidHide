@@ -7,28 +7,10 @@
 #include "Utils.h"
 #include "Volume.h"
 #include "Logging.h"
+#include "ConfigurationUi.h"
 
 // Define user-message for processing device interface arrivals
 constexpr auto WM_USER_CM_NOTIFICATION_REFRESH{ WM_USER + 1 };
-
-namespace
-{
-    // Capture the list box content as a set of paths
-    HidHide::FullImageNames ListBoxToPathSet(_In_ CListBox const& listBox)
-    {
-        TRACE_ALWAYS(L"");
-        HidHide::FullImageNames result;
-
-        for (int index{}, size(listBox.GetCount()); (index < size); index++)
-        {
-            CString value;
-            listBox.GetText(index, value);
-            result.emplace(value.GetBuffer());
-        }
-
-        return (result);
-    }
-}
 
 IMPLEMENT_DYNAMIC(CWhitelistDlg, CDialogEx)
 
@@ -114,6 +96,7 @@ DROPEFFECT CWhitelistDlg::OnDragOver(CWnd* pWnd, COleDataObject* pDataObject, DW
 
 _Use_decl_annotations_
 DROPEFFECT CWhitelistDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DROPEFFECT dropDefault, DROPEFFECT dropList, CPoint point)
+try
 {
     TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(pWnd);
@@ -140,6 +123,13 @@ DROPEFFECT CWhitelistDlg::OnDropEx(CWnd* pWnd, COleDataObject* pDataObject, DROP
 
     return (DROPEFFECT_COPY);
 }
+catch (std::runtime_error const& error)
+{
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+    return DROPEFFECT_NONE;
+}
+
 
 _Use_decl_annotations_
 bool CWhitelistDlg::MousePointerAtWhitelist(CPoint point)
@@ -175,7 +165,7 @@ BOOL CWhitelistDlg::OnInitDialog()
     m_Inverse.SetWindowTextW(HidHide::StringTable(IDS_CHECK_WHITELIST_INVERSE).c_str());
 
     // Reflect the current state in the check-box
-    m_Inverse.SetCheck(FilterDriverProxy().GetInverse() ? BST_CHECKED : BST_UNCHECKED);
+    Refresh();
 
     return (TRUE);
 }
@@ -196,15 +186,18 @@ void CWhitelistDlg::Refresh()
 
 _Use_decl_annotations_
 LRESULT CWhitelistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
+try
 {
     TRACE_ALWAYS(L"");
     UNREFERENCED_PARAMETER(wParam);
     UNREFERENCED_PARAMETER(lParam);
 
+    auto const whitelist = FilterDriverProxy().GetWhitelist();
+    auto const inverse = FilterDriverProxy().GetInverse();
     m_Whitelist.UpdateData(FALSE);
     m_Whitelist.ResetContent();
     m_Whitelist.SetSel(-1, FALSE);
-    for (auto const& fullImageName : FilterDriverProxy().GetWhitelist())
+    for (auto const& fullImageName : whitelist)
     {
         auto const index{ m_Whitelist.AddString(fullImageName.c_str()) };
         if ((LB_ERR == index) || (LB_ERRSPACE == index)) THROW_WIN32(ERROR_INVALID_PARAMETER);
@@ -215,10 +208,21 @@ LRESULT CWhitelistDlg::OnUserMessageRefresh(WPARAM wParam, LPARAM lParam)
     }
     m_Whitelist.SetFocus();
     m_Whitelist.UpdateData(TRUE);
+    m_DisplayedWhitelist = whitelist;
+    m_DisplayedInverse = inverse;
+    m_Inverse.SetCheck(inverse ? BST_CHECKED : BST_UNCHECKED);
     return (0);
 }
+catch (std::runtime_error const& error)
+{
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+    return 0;
+}
+
 
 void CWhitelistDlg::OnBnClickedButtonWhitelistInsert()
+try
 {
     TRACE_ALWAYS(L"");
 
@@ -242,15 +246,22 @@ void CWhitelistDlg::OnBnClickedButtonWhitelistInsert()
             if (fullImageName == value) return;
         }
 
-        // No duplicates so add it
-        if (auto const result{ m_Whitelist.AddString(fullImageName) }; (LB_ERR == result) || (LB_ERRSPACE == result)) THROW_WIN32(ERROR_INVALID_PARAMETER);
-
-        FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist));
+        auto next = m_DisplayedWhitelist;
+        next.emplace(fullImageName.GetString());
+        FilterDriverProxy().SetWhitelist(m_DisplayedWhitelist, next);
+        m_DisplayedWhitelist = std::move(next);
         Refresh();
     }
 }
+catch (std::runtime_error const& error)
+{
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+}
+
 
 void CWhitelistDlg::OnBnClickedButtonWhitelistDelete()
+try
 {
     TRACE_ALWAYS(L"");
 
@@ -260,20 +271,38 @@ void CWhitelistDlg::OnBnClickedButtonWhitelistDelete()
     itemsSelected.SetSize(size);
     if (LB_ERR == m_Whitelist.GetSelItems(size, itemsSelected.GetData())) THROW_WIN32(ERROR_INVALID_PARAMETER);
 
-    // Iterate the array of selected items and remove the entries marked
+    auto next = m_DisplayedWhitelist;
+    // Build the request before changing the list, so failed saves can be retried.
     for (int index{ size }; (index > 0);)
     {
         index--;
         CString value;
-        if (LB_ERR == m_Whitelist.DeleteString(itemsSelected[index])) THROW_WIN32(ERROR_INVALID_PARAMETER);
+        m_Whitelist.GetText(itemsSelected[index], value);
+        next.erase(value.GetString());
     }
 
-    FilterDriverProxy().SetWhitelist(ListBoxToPathSet(m_Whitelist));
+    FilterDriverProxy().SetWhitelist(m_DisplayedWhitelist, next);
+    m_DisplayedWhitelist = std::move(next);
     Refresh();
 }
+catch (std::runtime_error const& error)
+{
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
+}
+
 
 void CWhitelistDlg::OnBnClickedCheckInverse()
+try
 {
     TRACE_ALWAYS(L"");
-    FilterDriverProxy().SetInverse(0 != (m_Inverse.GetCheck() & BST_CHECKED));
+    bool const inverse = 0 != (m_Inverse.GetCheck() & BST_CHECKED);
+    FilterDriverProxy().SetInverse(m_DisplayedInverse, inverse);
+    m_DisplayedInverse = inverse;
+}
+catch (std::runtime_error const& error)
+{
+    m_Inverse.SetCheck(m_DisplayedInverse ? BST_CHECKED : BST_UNCHECKED);
+    ReportConfigurationError(error);
+    if (dynamic_cast<HidHide::ConfigurationConflict const*>(&error)) Refresh();
 }

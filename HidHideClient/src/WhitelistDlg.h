@@ -12,6 +12,7 @@ class CWhitelistDlg : public CDialogEx, public HidHide::IDropTarget
     DECLARE_DYNAMIC(CWhitelistDlg)
 
 public:
+    void RefreshConfiguration() { Refresh(); }
 
     CWhitelistDlg(_In_ CHidHideClientDlg& hidHideClientDlg, _In_opt_ CWnd* pParent);
     virtual ~CWhitelistDlg();
@@ -54,6 +55,9 @@ private:
 
     // Attributes
     HidHide::FullImageNames m_DropTargetFullImageNames;
+
+    HidHide::FullImageNames m_DisplayedWhitelist;
+    bool m_DisplayedInverse{};
 
     // Controls
     CListBox m_Whitelist;

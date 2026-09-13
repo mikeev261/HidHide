@@ -1,7 +1,5 @@
 # Unified package progress
 
-For the complete fork overview and next-agent handoff, see [September 13 checkpoint](fork-checkpoint-2026-09-13.md) and [draft PR #21](https://github.com/mikeev261/HidHide/pull/21). Runtime results below were last verified September 8.
-
 Current scope: practical, generally working unsigned release tested on the user's local Windows 11 x64 PC. The user explicitly cancelled VM testing and deferred the exhaustive legacy, interrupted-install and power-loss matrix. No automatic publishing or merge. Driver signatures, Secure Boot, IOCTL contracts and user settings remain unchanged.
 
 ## Current checkpoint — 2026-09-08 evening

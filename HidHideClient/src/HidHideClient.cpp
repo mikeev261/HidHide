@@ -219,7 +219,7 @@ namespace
             {
                 std::vector<ProfilesDeviceItem> Enumerate() override
                 {
-                    return {{L"HID\\FIXTURE_WHEEL",L"Fixture steering wheel",true,{L"HID\\FIXTURE_WHEEL"}},
+                    return {{L"HID\\FIXTURE_WHEEL",L"Fixture steering wheel",true,{L"HID\\FIXTURE_WHEEL"},L"wheel",{{true,1,4},{false,0,0}}},
                         {L"HID\\FIXTURE_PEDALS",L"Fixture pedals",true,{L"HID\\FIXTURE_PEDALS"}},
                         {L"HID\\FIXTURE_VIRTUAL",L"Fixture virtual controller",true,{L"HID\\FIXTURE_VIRTUAL"}}};
                 }

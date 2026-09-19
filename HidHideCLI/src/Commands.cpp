@@ -43,6 +43,9 @@ namespace
         os  << L"{ " \
             << L"\"present\" : " << std::boolalpha << hidDeviceInformation.present << L" ," << std::endl \
             << L"\"gamingDevice\" : " << std::boolalpha << hidDeviceInformation.gamingDevice << L" ," << std::endl \
+            << L"\"usageKnown\" : " << std::boolalpha << hidDeviceInformation.usageKnown << L" ," << std::endl \
+            << L"\"usagePage\" : " << hidDeviceInformation.usagePage << L" ," << std::endl \
+            << L"\"usageId\" : " << hidDeviceInformation.usageId << L" ," << std::endl \
             << L"\"symbolicLink\" : \"" << escape_json(hidDeviceInformation.symbolicLink.wstring()) << L"\" ," << std::endl \
             << L"\"vendor\" : \"" << escape_json(hidDeviceInformation.vendor) << L"\" ," << std::endl \
             << L"\"product\" : \"" << escape_json(hidDeviceInformation.product) << L"\" ," << std::endl \

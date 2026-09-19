@@ -1,4 +1,5 @@
 import type {Profile, CatalogProfile, Snapshot, Draft, Device, Settings, Rule} from './types.ts';
+import {classifyDevice} from './device-kind.ts';
 export const clone = <T,>(value:T):T => structuredClone(value);
 export function profileData(p:Profile|CatalogProfile):Profile {
  return {schemaVersion:1,id:p.id,revision:p.revision,name:p.name,kind:p.kind,enabled:p.enabled,priority:p.priority,executablePath:p.executablePath,defaultVisibility:'visible',deviceRules:clone(p.deviceRules)};
@@ -21,8 +22,9 @@ export function deviceRows(profile:Profile,original:Profile|null,devices:Device[
   return {device,value,changed:!original||visibility(original,device,before!)!==value};
  });
 }
-export function filterDeviceRows<T extends {device:Device}>(rows:T[],hideDisconnected:boolean,connectionKnown:boolean):T[]{
- return hideDisconnected&&connectionKnown?rows.filter(row=>row.device.connected):rows;
+export function filterDeviceRows<T extends {device:Device}>(rows:T[],hideDisconnected:boolean,connectionKnown:boolean,hideNonControllers=false):T[]{
+ if(!hideNonControllers&&!(hideDisconnected&&connectionKnown))return rows;
+ return rows.filter(row=>(!hideDisconnected||!connectionKnown||row.device.connected)&&(!hideNonControllers||classifyDevice(row.device).controller!=='non-game'));
 }
 export function setVisibility(p:Profile,device:Device,value:'hidden'|'visible'):Profile {
  const ids=new Set(device.identities.map(x=>x.toLowerCase()));

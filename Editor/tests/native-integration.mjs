@@ -22,6 +22,9 @@ try{
  await fs.mkdir(output,{recursive:true});
  await until(()=>fs.access(path.join(root,'editor-host-ready.json')).then(()=>true,()=>false),'Native fixture did not start');
  let response=await exchange({command:'fixture-process',running:true});
+ const usageSnapshot=(await exchange({command:'snapshot'})).snapshot;
+ assert.deepEqual(usageSnapshot.devices.find(d=>d.name==='Fixture steering wheel').hidUsages,[{known:true,page:1,usage:4},{known:false,page:0,usage:0}]);
+ checks.push('Numeric HID usages and unavailable collection metadata survive the production editor bridge');
  let page=await open();
  coldFixtureToReadyMs=performance.now()-fixtureStarted;
  await expect(page.getByRole('heading',{name:'Fixture Game',exact:true})).toBeVisible({timeout:20000});

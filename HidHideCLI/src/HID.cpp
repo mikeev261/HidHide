@@ -356,6 +356,9 @@ namespace
         // Get the usage page
         HIDP_CAPS capabilities;
         if (HIDP_STATUS_SUCCESS != ::HidP_GetCaps(preParsedData, &capabilities)) THROW_WIN32(ERROR_INVALID_PARAMETER);
+        result.usageKnown = true;
+        result.usagePage = capabilities.UsagePage;
+        result.usageId = capabilities.Usage;
 
         // Get the model information
         HIDD_ATTRIBUTES attributes;

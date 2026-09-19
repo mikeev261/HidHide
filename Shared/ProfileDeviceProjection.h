@@ -6,12 +6,18 @@
 
 namespace HidHide::Profiles
 {
+    struct ProfileHidUsage
+    {
+        bool known{};
+        USHORT page{}, usage{};
+    };
     struct ProfileDeviceGroup
     {
         std::wstring identity, friendly;
         bool connected{};
         std::vector<std::wstring> policyIdentities;
         std::wstring kind{L"unknown"};
+        std::vector<ProfileHidUsage> hidUsages;
     };
 
     // Presentation only: use already-enumerated product/usage information.
@@ -56,6 +62,8 @@ namespace HidHide::Profiles
                 ? L" — composite group (" + std::to_wstring(expanded.size()) + L" required paths)"
                 : L" — individual HID interface");
             result.push_back({ *expanded.begin(), std::move(label), connected, { expanded.begin(), expanded.end() }, ProfileDeviceKind(friendly, devices) });
+            for (auto const& device : devices)
+                result.back().hidUsages.push_back({device.usageKnown, device.usagePage, device.usageId});
         }
         return result;
     }

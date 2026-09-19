@@ -1,5 +1,48 @@
 # Unified package progress
 
+## Device categories and controller view filter — 2026-09-19
+
+Candidate 2.1.16 adds distinct audio-interface, video-capture, Stream Deck/dial,
+footswitch, shifter, throttle, rudder, haptic, monitor, lighting, receiver and
+barcode artwork. Three scoped Sol researchers verified product categories and HID
+classification semantics. See docs/device-classification.md for sources, local
+coverage and the conservative fallback hierarchy.
+
+Numeric top-level HID usages are carried from existing enumeration into the
+editor snapshot. Device type and game-input capability are separate; recognized
+game-input collections take precedence over name-inferred capability. Unknown
+collections do not silently become non-game devices. A persistent one-click
+Hide non-game controllers view filter retains unknowns, composes with Hide
+disconnected and preserves all saved and pending profile rules. Device details
+explain the classification. The signed driver, grouping/path expansion and
+application-only upgrade behavior are unchanged.
+
+The installer license first-paint change in 2.1.15 was accepted by the user before
+this work and remains included. The installed application and driver are not
+modified by development checks. Validation evidence for this candidate is kept
+in artifacts/device-classification-ci.log and artifacts/performance-ui-validation.
+
+## Installer license initial rendering — 2026-09-19
+
+Candidate 2.1.15 replaces the setup license's word-processor RTF with simple
+paragraph/font formatting, addressing the documented Windows Installer first-page
+blank-until-scroll issue with WixUI_Minimal. The displayed text now matches the
+canonical MIT license, including both upstream copyright notices. MSI checks parse
+the embedded license control and compare its text to LICENSE. The driver payload
+and application-only upgrade/profile-preservation behavior are unchanged.
+The x64 Release `Ci` target passed: 162 native tests, 546 managed checks,
+245 MSI checks, 7 source-evidence checks and 8 editor tests. The embedded RTF
+successfully parses and matches the full canonical license, including Unicode.
+Running the new MSI checks against the previous 2.1.14 release fails at the
+complex-RTF regression guard, as expected.
+An opening-dialog visual check reached WelcomeEulaDlg, but Computer Use returned
+a black capture and `GetCursorPos failed: Access is denied (0x80070005)`;
+first-paint visual acceptance remains pending. The inspection process was closed
+before installation. No install/upgrade lifecycle was executed.
+
+The upstream WiX guidance describes this symptom and the simple-RTF workaround:
+https://docs.firegiant.com/wix3/wixui/wixui_customizations/#specifying-a-license-file
+
 ## Light/dark appearance and upgrade preservation — 2026-09-19
 
 Candidate 2.1.14 uses vivid red accents with neutral grey/black dark surfaces and

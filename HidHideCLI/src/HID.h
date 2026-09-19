@@ -29,6 +29,11 @@ namespace HidHide
         DeviceInstancePath    baseContainerDeviceInstancePath;
         GUID                  baseContainerClassGuid;
         size_t                baseContainerDeviceCount;
+        // Presentation metadata from the existing HidP_GetCaps call. Unknown is
+        // distinct from a successfully queried non-game collection.
+        bool                  usageKnown{};
+        USHORT                usagePage{};
+        USHORT                usageId{};
     };
 
     typedef std::multimap<std::wstring, std::vector<HidDeviceInformation>> FriendlyNamesAndHidDeviceInformation;

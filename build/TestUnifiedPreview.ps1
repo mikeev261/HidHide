@@ -138,6 +138,19 @@ try {
  Check (@($launch | Where-Object {$_.Values[0] -eq 'UILevel >= 3 OR AFTERREBOOT OR UPGRADINGPRODUCTCODE'}).Count -eq 1) 'Interactive UI prevents unprompted ForceReboot'
  Check (@($launch | Where-Object {$_.Values[0] -match 'HIDHIDE_TRANSACTION'}).Count -eq 0) 'Public MSI has no private-bootstrapper launch gate'
  $dialogs=@(Rows Dialog)
+ # Word-processor RTF can leave the first WixUI_Minimal license page blank
+ # until scrolled. Inspect the actual MSI control, not just the source file.
+ $licenses=@(Rows Control | Where-Object { $_.Values[0] -eq 'WelcomeEulaDlg' -and $_.Values[2] -eq 'ScrollableText' })
+ Check ($licenses.Count -eq 1) 'Welcome page contains exactly one license control'
+ $licenseRtf=$licenses[0].Values[9]
+ Check ($licenseRtf -notmatch '\\(?:stylesheet|fontemb|pict|object|pgdsctbl|sectd|paperw|paperh)\b') 'License RTF excludes complex document layout that can prevent initial paint'
+ Add-Type -AssemblyName System.Windows.Forms
+ $licenseReader=New-Object System.Windows.Forms.RichTextBox
+ try {
+  $licenseReader.Rtf=$licenseRtf
+  $expectedLicense=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\LICENSE'))
+  Check (($licenseReader.Text -replace '\s+',' ').Trim() -ceq ($expectedLicense -replace '\s+',' ').Trim()) 'Displayed MSI license preserves the full canonical MIT text and both copyright notices'
+ } finally { $licenseReader.Dispose() }
  foreach($name in @('WelcomeEulaDlg','ProgressDlg','ExitDialog','MaintenanceWelcomeDlg','MaintenanceTypeDlg','VerifyReadyDlg')) {
   Check (@($dialogs | Where-Object {$_.Values[0] -eq $name}).Count -eq 1) ('Standard WiX MSI dialog present: '+$name)
  }

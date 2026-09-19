@@ -179,7 +179,7 @@ namespace HidHide::Editor
         }
         auto observed = m_Coordinator.ObserveEnforcement();
         std::set<std::wstring> known;
-        auto addDevice = [&](std::wstring id, std::wstring name, bool connected, std::vector<std::wstring> const& identities, std::wstring detail, std::wstring kind)
+        auto addDevice = [&](std::wstring id, std::wstring name, bool connected, std::vector<std::wstring> const& identities, std::wstring detail, std::wstring kind, std::vector<ProfileHidUsage> const& usages)
         {
             Array paths; std::size_t hidden{};
             for (auto const& identity : identities)
@@ -188,16 +188,19 @@ namespace HidHide::Editor
                 if (std::any_of(observed.observed.hiddenDevices.begin(), observed.observed.hiddenDevices.end(), [&](auto const& path) { return _wcsicmp(path.c_str(), identity.c_str()) == 0; })) ++hidden;
             }
             std::wstring current = !observed.observedKnown ? L"Unknown" : !observed.observed.hidingEnabled || !hidden ? L"Visible" : hidden == identities.size() ? L"Hidden" : L"Mixed";
+            Array hidUsages;
+            for (auto const& usage : usages)
+                hidUsages.push_back(Value{Object{{L"known",Value{usage.known}}, {L"page",Value{static_cast<std::uint64_t>(usage.page)}}, {L"usage",Value{static_cast<std::uint64_t>(usage.usage)}}}});
             devices.push_back(Value{Object{{L"id", Text(std::move(id))}, {L"name", Text(std::move(name))}, {L"detail", Text(std::move(detail))},
-                {L"connected", Value{connected}}, {L"identities", Value{std::move(paths)}}, {L"current", Text(current)}, {L"kind", Text(std::move(kind))}}});
+                {L"connected", Value{connected}}, {L"identities", Value{std::move(paths)}}, {L"current", Text(current)}, {L"kind", Text(std::move(kind))}, {L"hidUsages",Value{std::move(hidUsages)}}}});
         };
         std::wstring deviceError;
-        try { for (auto const& device : m_Devices.Enumerate()) addDevice(device.identity, device.friendly, device.connected, device.policyIdentities, device.identity, device.kind); }
+        try { for (auto const& device : m_Devices.Enumerate()) addDevice(device.identity, device.friendly, device.connected, device.policyIdentities, device.identity, device.kind, device.hidUsages); }
         catch (std::exception const& error) { deviceError.assign(error.what(), error.what() + strlen(error.what())); }
         for (auto const& [id, profile] : snapshot.profiles)
         {
             (void)id; for (auto const& rule : profile.rules) if (!known.count(rule.identity))
-                addDevice(rule.identity, rule.friendlyName.empty() ? rule.identity : rule.friendlyName, false, {rule.identity}, L"Remembered exact path", L"unknown");
+                addDevice(rule.identity, rule.friendlyName.empty() ? rule.identity : rule.friendlyName, false, {rule.identity}, L"Remembered exact path", L"unknown", {});
         }
         auto displaySettings = snapshot.settings; if (!displaySettings.revision) displaySettings.revision = 1;
         if (!IsStableId(displaySettings.selectedGlobalId) && !snapshot.profiles.empty()) displaySettings.selectedGlobalId = snapshot.profiles.begin()->first;

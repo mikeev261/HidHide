@@ -226,3 +226,21 @@ TEST(DeviceSelection, SuccessfulUserRefreshSatisfiesPendingTopologyRefresh)
     pending.Complete();
     pending.RunIfDue(600, [] { FAIL() << "User refresh already read the latest topology"; });
 }
+
+TEST(DeviceSelection, ProjectionRetainsNumericUsagesAndUnknownWithoutChangingPolicyPaths)
+{
+    auto game = Device(L"game"), media = Device(L"media"), unavailable = Device(L"unavailable");
+    game.usageKnown = media.usageKnown = true;
+    game.usagePage = 1; game.usageId = 5;
+    media.usagePage = 12; media.usageId = 1;
+    unavailable.present = false;
+    auto groups = HidHide::Profiles::ProjectProfileDeviceGroups({{L"Composite", {game, media, unavailable}}});
+    ASSERT_EQ(1u, groups.size());
+    auto const& group = groups.front();
+    ASSERT_EQ(3u, group.hidUsages.size());
+    EXPECT_TRUE(group.hidUsages[0].known);
+    EXPECT_EQ(1, group.hidUsages[0].page); EXPECT_EQ(5, group.hidUsages[0].usage);
+    EXPECT_EQ(12, group.hidUsages[1].page); EXPECT_EQ(1, group.hidUsages[1].usage);
+    EXPECT_FALSE(group.hidUsages[2].known);
+    EXPECT_EQ((std::vector<std::wstring>{L"game",L"media",L"unavailable"}), group.policyIdentities);
+}

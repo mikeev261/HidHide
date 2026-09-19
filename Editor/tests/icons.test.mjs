@@ -23,6 +23,6 @@ test('application icon reads deduplicate, stay bounded, cache failures and rejec
  assert.equal(await transient('C:\\Installing.exe'),icon.toDataURL());
 });
 test('device types distinguish peripherals and preserve an honest unknown fallback',()=>{
- for(const [name,kind] of [['Stream Deck XL','keypad'],['Logitech BRIO webcam','camera'],['Arctis headset','headphones'],['Simucube 2 Pro','wheel'],['Simucube ActivePedal','pedals'],['Heusinkveld Ultimate+','pedals'],['Heusinkveld Handbrake','handbrake'],['Microphone','microphone'],['USB keyboard','keyboard'],['Mouse','mouse'],['Xbox controller','gamepad'],['Unidentified USB interface','unknown']])assert.equal(deviceKind({name,detail:''}),kind,name);
+ for(const [name,kind] of [['Stream Deck XL','streamdeck'],['Logitech BRIO webcam','camera'],['Arctis headset','headphones'],['Simucube 2 Pro','wheel'],['Simucube ActivePedal','pedals'],['Heusinkveld Ultimate+','pedals'],['Heusinkveld Handbrake','handbrake'],['Microphone','microphone'],['USB keyboard','keyboard'],['Mouse','mouse'],['Xbox controller','gamepad'],['Unidentified USB interface','unknown']])assert.equal(deviceKind({name,detail:''}),kind,name);
  assert.equal(deviceKind({name:'USB device',detail:'',kind:'camera'}),'camera');
 });

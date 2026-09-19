@@ -16,18 +16,30 @@ public sealed class MaintenanceLease : IDisposable
     readonly Mutex owner;
     bool owned;
     readonly Guid transaction;
-    public MaintenanceLease(Guid transaction, bool recovery = false)
+    public MaintenanceLease(Guid transaction, bool recovery = false, bool createPreparation = false)
     {
         ProtectedJournal.RequireAdministrator(); this.transaction = transaction;
-        if (recovery)
+        if (recovery || createPreparation)
         {
-            _ = new ProtectedJournal(transaction).Load();
-            ValidateMarker(transaction);
+            if (recovery)
+            {
+                _ = new ProtectedJournal(transaction).Load();
+                ValidateMarker(transaction);
+            }
+            else
+            {
+                using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+                using var existing = machine.OpenSubKey(Marker);
+                if (existing != null)
+                    throw new InvalidOperationException("Another protected maintenance transaction is active.");
+            }
             var eventSecurity = new EventWaitHandleSecurity(); eventSecurity.SetAccessRuleProtection(true, false);
             eventSecurity.AddAccessRule(new EventWaitHandleAccessRule(new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null), EventWaitHandleRights.Synchronize, AccessControlType.Allow));
             foreach (var sid in new[] { WellKnownSidType.BuiltinAdministratorsSid, WellKnownSidType.LocalSystemSid })
                 eventSecurity.AddAccessRule(new EventWaitHandleAccessRule(new SecurityIdentifier(sid, null), EventWaitHandleRights.FullControl, AccessControlType.Allow));
-            recoveryBarrier = new EventWaitHandle(false, EventResetMode.ManualReset, @"Global\HidHide.AppProfiles.Maintenance.v1", out _, eventSecurity);
+            recoveryBarrier = new EventWaitHandle(false, EventResetMode.ManualReset, @"Global\HidHide.AppProfiles.Maintenance.v1", out bool created, eventSecurity);
+            if (createPreparation && !created)
+                throw new InvalidOperationException("Another ordinary-user maintenance preparation is active.");
             barrier = recoveryBarrier.SafeWaitHandle;
         }
         else barrier = OpenEventW(0x100000, false, @"Global\HidHide.AppProfiles.Maintenance.v1");
@@ -47,15 +59,18 @@ public sealed class MaintenanceLease : IDisposable
         }
         catch { acquired?.Dispose(); barrier.Dispose(); recoveryBarrier?.Dispose(); throw; }
     }
-    public void MarkPending(bool rollback)
+    public void MarkPending(bool rollback, string? operation = null, bool canRestoreLegacy = false, bool restartRequired = false)
     {
         AssertHeld();
+        if (operation != null && operation is not ("install" or "repair" or "uninstall" or "upgrade"))
+            throw new InvalidDataException("Invalid maintenance operation metadata.");
         using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
         // Forward MSI workers and recovery may reuse only this transaction's marker.
-        using (var existing = machine.OpenSubKey(Marker))
+        using (var existing = machine.OpenSubKey(Marker, operation != null))
             if (existing != null)
             {
                 ValidateMarker(transaction);
+                if (operation != null) WriteDisplayMetadata(existing, operation, canRestoreLegacy, restartRequired);
                 return;
             }
         var acl = new RegistrySecurity(); acl.SetAccessRuleProtection(true, false);
@@ -65,7 +80,18 @@ public sealed class MaintenanceLease : IDisposable
             acl.AddAccessRule(new RegistryAccessRule(sid, RegistryRights.FullControl, InheritanceFlags.ContainerInherit, PropagationFlags.None, AccessControlType.Allow));
         acl.AddAccessRule(new RegistryAccessRule(new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null), RegistryRights.ReadKey, InheritanceFlags.ContainerInherit, PropagationFlags.None, AccessControlType.Allow));
         using var key = machine.CreateSubKey(Marker, RegistryKeyPermissionCheck.ReadWriteSubTree, acl);
-        key.SetValue("Transaction", transaction.ToString("D"), RegistryValueKind.String); key.Flush();
+        key.SetValue("Transaction", transaction.ToString("D"), RegistryValueKind.String);
+        if (operation != null) WriteDisplayMetadata(key, operation, canRestoreLegacy, restartRequired);
+        key.Flush();
+    }
+    static void WriteDisplayMetadata(RegistryKey key, string operation, bool canRestoreLegacy, bool restartRequired)
+    {
+        // These values are ordinary-user-readable display hints only. The
+        // protected setup journal remains the sole authorization source.
+        key.SetValue("Operation", operation, RegistryValueKind.String);
+        key.SetValue("CanRestoreLegacy", canRestoreLegacy ? 1 : 0, RegistryValueKind.DWord);
+        key.SetValue("RestartRequired", restartRequired ? 1 : 0, RegistryValueKind.DWord);
+        key.Flush();
     }
     public void AssertHeld()
     { if (!owned || barrier.IsInvalid || barrier.IsClosed) throw new InvalidOperationException("Maintenance lease lost."); }

@@ -150,7 +150,7 @@ no marker, unchanged application/runtime/driver hashes and unchanged filters.
 Ordinary-user CLI help, version, cloak-state and inv-state all returned 0
 (`gui-smoke2-20260908-213735`); version was 2.1.0.0 and both states were off.
 The GUI launched as PID 6048 in the ordinary user's session and displayed its
-Applications tab with fork version and baseline-applied status. Tab navigation,
+Applications tab with product version and baseline-applied status. Tab navigation,
 About and normal tray exit were not verified: Computer Use reported the VM
 connection's integrity level was higher than the helper, and input did not work.
 

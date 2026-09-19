@@ -32,8 +32,8 @@
     <Keyword>MFCProj</Keyword>
     <RootNamespace>HidHideClient</RootNamespace>
     <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
-    <BldCompanyName>mikeev261</BldCompanyName>
-    <BldProductName>HidHide</BldProductName>
+    <BldCompanyName>HidHide Profiles</BldCompanyName>
+    <BldProductName>HidHide Profiles</BldProductName>
     <BldCopyright>Eric Korff de Gidts</BldCopyright>
   </PropertyGroup>
   <Import Project="..\build\ProductVersion.targets" />
@@ -150,7 +150,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -183,7 +183,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -216,7 +216,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -250,7 +250,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -284,7 +284,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -317,7 +317,7 @@
     <ClCompile>
       <BldParameters>/D BldCompanyName="$(BldCompanyName)" /D BldProductName="$(BldProductName)" /D BldProductVersion="$(BldProductVersion)" /D BldProductVersionMajor="$(BldProductVersionMajor)" /D BldProductVersionMinor="$(BldProductVersionMinor)" /D BldProductVersionRevision="$(BldProductVersionRevision)" /D BldProductVersionBuild="$(BldProductVersionBuild)" /D BldProductDescription="$(BldProductDescription)" /D BldCopyright="$(BldCopyright)" </BldParameters>
       <ProjectDirLength>$([System.String]::Copy('$(ProjectDir)').Length)</ProjectDirLength>
-      <AdditionalOptions>%(BldParameters)%(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/utf-8 %(BldParameters)%(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -346,7 +346,11 @@
       <PreprocessorDefinitions Condition="('$(ConfigurationType)' == 'DynamicLibrary')">_WINDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <Manifest><AdditionalManifestFiles>$(ProjectDir)Profiles.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles></Manifest>
+  </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\Shared\ProfileApplicationService.h" />
     <ClInclude Include="..\HidHideCLI\src\DeviceSelection.h" />
     <ClInclude Include="src\DeviceSelectionTree.h" />
     <ClInclude Include="..\HidHideCLI\src\FilterDriverProxy.h" />
@@ -362,9 +366,12 @@
     <ClInclude Include="src\ActiveStateView.h" />
     <ClInclude Include="src\ManagerActivation.h" />
     <ClInclude Include="src\PendingDeviceRefresh.h" />
-    <ClInclude Include="src\AppProfilesDlg.h" />
     <ClInclude Include="src\IDropTarget.h" />
-    <ClInclude Include="src\ProfileManager.h" />
+    <ClInclude Include="src\ProfilesCoordinator.h" />
+    <ClInclude Include="src\ProfilesEnforcementAdapter.h" />
+    <ClInclude Include="src\EditorService.h" />
+    <ClInclude Include="src\ProfilesPage.h" />
+    <ClInclude Include="src\ProfilesView.h" />
     <ClInclude Include="src\ProfileProcessMatch.h" />
     <ClInclude Include="src\WhitelistDlg.h" />
     <ClInclude Include="stdafx.h" />
@@ -383,8 +390,14 @@
     <ClCompile Include="src\BlacklistDlg.cpp" />
     <ClCompile Include="src\HidHideClient.cpp" />
     <ClCompile Include="src\HidHideClientDlg.cpp" />
-    <ClCompile Include="src\AppProfilesDlg.cpp" />
-    <ClCompile Include="src\ProfileManager.cpp" />
+    <ClCompile Include="src\EditorService.cpp" />
+    <ClCompile Include="src\ProfilesCoordinator.cpp" />
+    <ClCompile Include="src\ProfilesEnforcementAdapter.cpp" />
+    <ClCompile Include="src\ProfilesPage.cpp" />
+    <ClCompile Include="src\ProfilesView.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="src\WhitelistDlg.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>

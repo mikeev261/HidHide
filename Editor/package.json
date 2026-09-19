@@ -1,0 +1,28 @@
+{
+  "name": "hidhide-profiles-editor",
+  "version": "2.1.13",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "start": "electron .",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:ui": "node tests/acceptance.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "1.47.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@playwright/test": "1.63.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "44.4.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  }
+}

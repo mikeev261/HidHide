@@ -117,53 +117,106 @@ namespace HidHide
             return response;
         }
 
-        // Polled on the coordinator thread. PIPE_NOWAIT prevents a stalled client
-        // from blocking the GUI or extending ownership of a driver transaction.
+        // One bounded request per connection. Overlapped pipe operations wake the
+        // coordinator worker without a periodic idle poll or blocking its GUI.
         class Server
         {
+            enum class Phase { Connecting, Reading, Writing, WaitingClose };
+            Handle event{ nullptr, &::CloseHandle };
             Handle pipe{ nullptr, &::CloseHandle };
             std::wstring sid{ CurrentSid() };
+            bool requireInteractiveSession{};
+            OVERLAPPED operation{};
+            Phase phase{ Phase::Connecting };
+            bool immediate{};
+            bool pending{};
+            DWORD immediateBytes{};
             bool connected{};
             ULONGLONG deadline{};
+            std::vector<std::uint8_t> request = std::vector<std::uint8_t>(Protocol::MaxBytes);
             std::vector<std::uint8_t> response;
-            bool sent{};
+            std::uint8_t closeProbe{};
+            void Begin(Phase next)
+            {
+                phase = next; immediate = false; pending = false; immediateBytes = 0;
+                ::ResetEvent(event.get()); operation = {}; operation.hEvent = event.get();
+                DWORD transferred{}; BOOL ok{};
+                if (phase == Phase::Connecting) ok = ::ConnectNamedPipe(pipe.get(), &operation);
+                else if (phase == Phase::Reading) ok = ::ReadFile(pipe.get(), request.data(), static_cast<DWORD>(request.size()), &transferred, &operation);
+                else if (phase == Phase::Writing) ok = ::WriteFile(pipe.get(), response.data(), static_cast<DWORD>(response.size()), &transferred, &operation);
+                else ok = ::ReadFile(pipe.get(), &closeProbe, 1, &transferred, &operation);
+                if (ok || (phase == Phase::Connecting && ::GetLastError() == ERROR_PIPE_CONNECTED))
+                {
+                    immediate = true; immediateBytes = transferred; ::SetEvent(event.get()); return;
+                }
+                if (::GetLastError() != ERROR_IO_PENDING)
+                {
+                    if (phase != Phase::Connecting) { Disconnect(); return; }
+                    throw std::runtime_error("Configuration connection failed; refresh before retrying");
+                }
+                pending = true;
+            }
             void Disconnect()
             {
-                ::DisconnectNamedPipe(pipe.get());
-                connected = false; response.clear(); sent = false;
+                if (pending)
+                {
+                    ::CancelIoEx(pipe.get(), &operation);
+                    DWORD ignored{}; (void)::GetOverlappedResult(pipe.get(), &operation, &ignored, TRUE);
+                    pending = false;
+                }
+                (void)::DisconnectNamedPipe(pipe.get()); connected = false; response.clear();
+                Begin(Phase::Connecting);
+            }
+            bool Complete(DWORD& transferred)
+            {
+                if (immediate) { transferred = immediateBytes; return true; }
+                auto result = !!::GetOverlappedResult(pipe.get(), &operation, &transferred, FALSE);
+                pending = false; return result;
             }
         public:
             // Once a response has been consumed the client closes its end. Pump
             // observes that close before a maintenance shutdown destroys the pipe.
             bool Connected() const { return connected; }
-            explicit Server(PCWSTR pipeName = PipeName)
+            HANDLE WakeHandle() const { return event.get(); }
+            DWORD WaitTimeoutMs() const
+            {
+                if (!connected) return INFINITE;
+                auto now = ::GetTickCount64(); return now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
+            }
+            explicit Server(PCWSTR pipeName = PipeName, bool editorSession = false)
+                : requireInteractiveSession(editorSession)
             {
                 Security security(L"D:P(A;;GA;;;" + sid + L")");
-                pipe = Own(::CreateNamedPipeW(pipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                event = Own(::CreateEventW(nullptr, TRUE, FALSE, nullptr));
+                pipe = Own(::CreateNamedPipeW(pipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
+                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                     1, static_cast<DWORD>(Protocol::MaxBytes), static_cast<DWORD>(Protocol::MaxBytes), 0, &security.attributes));
+                Begin(Phase::Connecting);
+            }
+            ~Server() noexcept
+            {
+                // The kernel may still be using request/response storage. Drain
+                // cancellation before those vectors and the event are destroyed.
+                if (pending)
+                {
+                    (void)::CancelIoEx(pipe.get(), &operation);
+                    DWORD ignored{}; (void)::GetOverlappedResult(pipe.get(), &operation, &ignored, TRUE);
+                    pending = false;
+                }
             }
             void Pump(std::function<std::vector<std::uint8_t>(std::vector<std::uint8_t> const&)> const& handler)
             {
-                if (!connected)
+                if (connected && WaitTimeoutMs() == 0) { Disconnect(); return; }
+                if (::WaitForSingleObject(event.get(), 0) != WAIT_OBJECT_0) return;
+                DWORD transferred{};
+                if (!Complete(transferred)) { Disconnect(); return; }
+                if (phase == Phase::Connecting)
                 {
-                    auto ok = ::ConnectNamedPipe(pipe.get(), nullptr);
-                    auto error = ok ? ERROR_SUCCESS : ::GetLastError();
-                    if (!ok && error != ERROR_PIPE_CONNECTED) return;
                     connected = true; deadline = ::GetTickCount64() + 4000;
+                    Begin(Phase::Reading); return;
                 }
-                if (::GetTickCount64() > deadline) { Disconnect(); return; }
-                DWORD available{};
-                if (!::PeekNamedPipe(pipe.get(), nullptr, 0, nullptr, &available, nullptr)) { Disconnect(); return; }
-                if (sent) return; // Client closes after reading; never execute a second command on this connection.
-                if (response.empty())
+                if (phase == Phase::Reading)
                 {
-                    if (!available) return;
-                    if (available > Protocol::MaxBytes) { Disconnect(); return; }
-                    std::vector<std::uint8_t> request(Protocol::MaxBytes);
-                    DWORD read{};
-                    if (!::ReadFile(pipe.get(), request.data(), static_cast<DWORD>(request.size()), &read, nullptr)) { Disconnect(); return; }
-                    request.resize(read);
                     if (!::ImpersonateNamedPipeClient(pipe.get())) { Disconnect(); return; }
                     bool authenticated{};
                     try
@@ -173,21 +226,31 @@ namespace HidHide
                         {
                             auto clientToken = Own(token);
                             authenticated = TokenSid(clientToken.get()) == sid;
+                            if (authenticated && requireInteractiveSession)
+                            {
+                                DWORD clientSession{}, ownerSession{}, size{}; TOKEN_ELEVATION elevation{};
+                                authenticated = ::GetTokenInformation(clientToken.get(), TokenSessionId, &clientSession, sizeof(clientSession), &size)
+                                    && ::GetTokenInformation(clientToken.get(), TokenElevation, &elevation, sizeof(elevation), &size)
+                                    && !elevation.TokenIsElevated && ::ProcessIdToSessionId(::GetCurrentProcessId(), &ownerSession)
+                                    && ownerSession != 0 && clientSession == ownerSession;
+                            }
                         }
                     }
                     catch (...) { if (!::RevertToSelf()) std::terminate(); throw; }
                     if (!::RevertToSelf()) std::terminate();
                     if (!authenticated) { Disconnect(); return; }
-                    response = handler(request);
+                    try { response = handler(std::vector<std::uint8_t>(request.begin(), request.begin() + transferred)); }
+                    catch (...) { Disconnect(); throw; }
                     if (response.empty() || response.size() > Protocol::MaxBytes) { Disconnect(); return; }
+                    deadline = ::GetTickCount64() + 4000;
+                    Begin(Phase::Writing); return;
                 }
-                DWORD written{};
-                if (!::WriteFile(pipe.get(), response.data(), static_cast<DWORD>(response.size()), &written, nullptr))
+                if (phase == Phase::Writing)
                 {
-                    if (::GetLastError() != ERROR_NO_DATA) Disconnect();
-                    return;
+                    if (transferred != response.size()) { Disconnect(); return; }
+                    Begin(Phase::WaitingClose); return;
                 }
-                sent = written == response.size();
+                Disconnect(); // A client may send only one command, then closes.
             }
         };
     }

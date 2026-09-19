@@ -20,7 +20,7 @@ namespace HidHide
         FilterDriverProxy& operator=(_In_ FilterDriverProxy&& rhs) = delete;
 
         // Snapshot configuration. Driver handles exist only inside transactions.
-        explicit FilterDriverProxy(_In_ bool writeThrough, bool coordinator = false);
+        explicit FilterDriverProxy(_In_ bool writeThrough, bool coordinator = false, std::function<Configuration()> coordinatorRead = {});
         ~FilterDriverProxy() = default;
 
         void Refresh();
@@ -31,7 +31,14 @@ namespace HidHide
         void SetMaintenanceHandler(std::function<Configuration()> prepare) { m_PrepareMaintenance = std::move(prepare); }
         static std::unique_ptr<Maintenance::Session> BeginMaintenance();
         static Configuration ReadDriverConfiguration();
-        static void CommitDriverConfiguration(Configuration const& expected, Configuration const& desired);
+        static Configuration ReadDriverOnlyConfiguration();
+        // Exact profiles-first runtime composition boundary. Its signature has
+        // no legacy catalog input, making ConfigurationV1 unreachable.
+        static Configuration ComposeProfilesRuntimeConfiguration(std::function<DriverConfiguration()> readDriver);
+        // Read-only legacy payload capture is restricted to protected setup
+        // maintenance. Ordinary profile ownership belongs exclusively to JSON.
+        static AppProfiles ReadLegacyProfileCatalogForMaintenance();
+        static void CommitDriverState(DriverConfiguration const& expected, DriverConfiguration const& desired);
 
         // Get the control device state
         // Returns ERROR_SUCCESS when available for use
@@ -67,24 +74,6 @@ namespace HidHide
         // Delete an application from the white-list
         void WhitelistDelEntry(_In_ FullImageName const& fullImageName);
 
-        // Get the app profiles
-        AppProfiles GetAppProfiles() const;
-
-        // Set the app profiles
-        void SetAppProfiles(_In_ AppProfiles const& appProfiles);
-
-        // Create an empty application profile.
-        void AppProfileAdd(_In_ FullImageName const& fullImageName);
-
-        // Delete an application profile and all of its device entries.
-        void AppProfileDelete(_In_ FullImageName const& fullImageName);
-
-        // Add a device to an app profile
-        void AppProfileAddEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
-
-        // Delete a device from an app profile
-        void AppProfileDelEntry(_In_ FullImageName const& fullImageName, _In_ DeviceInstancePath const& deviceInstancePath);
-
         // Get the current enabled state; returns true when the device is active in hiding devices on the black-list
         bool GetActive() const;
 
@@ -100,8 +89,6 @@ namespace HidHide
         void SetBlacklist(DeviceInstancePaths const& expected, DeviceInstancePaths const& value);
 
         void SetWhitelist(FullImageNames const& expected, FullImageNames const& value);
-
-        void SetAppProfiles(AppProfiles const& expected, AppProfiles const& value);
 
         void SetActive(bool const& expected, bool const& value);
 

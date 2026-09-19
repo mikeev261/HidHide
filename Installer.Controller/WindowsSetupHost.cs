@@ -175,6 +175,7 @@ public sealed partial class WindowsSetupHost : ISetupHost, ILegacyRecoveryHost, 
         if (driver.Status != JournalStatus.Applied && driver.Status != JournalStatus.Committed) throw new InvalidOperationException("Driver transaction remains incomplete.");
         driver.Status = JournalStatus.Committed; driver.Reboot = false; journal.Save(driver); lease!.Complete();
     }
-    public void MarkPending() => lease!.MarkPending(false);
+    public void MarkPending(SetupRecord record) => lease!.MarkPending(false, record.Operation.ToString().ToLowerInvariant(),
+        record.Legacy.Any(x => x.RemovalIntent || x.Removed), record.Phase == SetupPhase.WaitingForReboot);
     public void Dispose() => lease?.Dispose();
 }

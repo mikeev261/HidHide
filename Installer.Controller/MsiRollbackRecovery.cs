@@ -7,10 +7,13 @@ namespace HidHide.Setup;
 
 public static class MsiRollbackRecovery
 {
-    static readonly string[] Files = { "HidHideCLI.exe", "HidHideClient.exe", "mfc140u.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "Driver/HidHide.inf", "Driver/HidHide.sys", "Driver/hidhide.cat", "Driver/LICENSE.rtf", "shortcut" };
+    static readonly string[] PayloadFiles = { "HidHideCLI.exe", "HidHideClient.exe", "mfc140u.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "Driver/HidHide.inf", "Driver/HidHide.sys", "Driver/hidhide.cat", "Driver/LICENSE.rtf" };
+    static readonly string[] Files = PayloadFiles.Concat(new[] { "shortcut/legacy-unified", "shortcut/current" }).ToArray();
+    static readonly string[] LegacyFiles = PayloadFiles.Concat(new[] { "shortcut" }).ToArray();
     public static void ValidateFiles(Dictionary<string, string>? files)
     {
-        if (files == null || files.Count != Files.Length || Files.Any(x => !files.ContainsKey(x)) || files.Values.Any(x => x != "absent" && !ValidHash(x)))
+        bool HasExactly(string[] expected) => files != null && files.Count == expected.Length && expected.All(files.ContainsKey);
+        if (files == null || !HasExactly(Files) && !HasExactly(LegacyFiles) || files.Values.Any(x => x != "absent" && !ValidHash(x)))
             throw new InvalidDataException("Invalid pre-MSI file evidence.");
     }
     static bool ValidHash(string value) => value != null && System.Text.RegularExpressions.Regex.IsMatch(value, "\\A[A-F0-9]{64}\\z");
@@ -27,8 +30,12 @@ public static class MsiRollbackRecovery
         var files = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (string name in Files)
         {
-            string path = name == "shortcut" ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "HidHide", ProductContract.Name + ".lnk") :
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "HidHide", name.Replace('/', Path.DirectorySeparatorChar));
+            string path = name switch
+            {
+                "shortcut/legacy-unified" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "HidHide", "HidHide (mikeev261 fork).lnk"),
+                "shortcut/current" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "HidHide Profiles", ProductContract.Name + ".lnk"),
+                _ => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "HidHide", name.Replace('/', Path.DirectorySeparatorChar))
+            };
             // Validate every existing parent even when the target is absent.
             string parent = path; while (!File.Exists(parent) && !Directory.Exists(parent)) parent = Path.GetDirectoryName(parent) ?? throw new InvalidDataException("Invalid owned file path.");
             ProtectedJournal.RejectReparsePath(parent);
@@ -59,7 +66,18 @@ public static class MsiRollbackRecovery
         }
         return result;
     }
-    public static bool Same(Dictionary<string, string> expected, Dictionary<string, string> actual) => expected.Count == actual.Count && expected.All(x => actual.TryGetValue(x.Key, out var value) && value == x.Value);
+    public static bool Same(Dictionary<string, string> expected, Dictionary<string, string> actual)
+    {
+        if (expected.Count == actual.Count && expected.All(x => actual.TryGetValue(x.Key, out var value) && value == x.Value)) return true;
+        // Schema-1 evidence from 2.1.3 called the legacy-unified shortcut simply
+        // "shortcut". Preserve recovery compatibility, but refuse to declare an
+        // unrecorded new-name shortcut restored.
+        return expected.Count == LegacyFiles.Length && LegacyFiles.All(expected.ContainsKey)
+            && actual.Count == Files.Length && Files.All(actual.ContainsKey)
+            && PayloadFiles.All(name => expected[name] == actual[name])
+            && expected["shortcut"] == actual["shortcut/legacy-unified"]
+            && actual["shortcut/current"] == "absent";
+    }
     public static void VerifyNative(SetupRecord setup, TransactionRecord driver, DriverState actual)
     {
         VerifyIdentity(setup, driver);

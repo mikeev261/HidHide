@@ -82,8 +82,23 @@ public sealed class ControllerStore
     public void Verify(SetupRecord record)
     {
         ProtectedJournal.ValidateDirectory(Cache);
-        var index = Index(); foreach (var item in index) VerifyFile(Path.Combine(Cache, item.Key), item.Value);
-        if (!string.IsNullOrEmpty(record.PackageHash) && record.PackageHash != index["HidHide.Unified.Preview.msi"]) throw new InvalidDataException("Journal belongs to another setup package.");
+        var index = Index();
+        bool currentPackage = string.IsNullOrEmpty(record.PackageHash) || record.PackageHash == index["HidHide.Unified.Preview.msi"];
+        if (!currentPackage)
+        {
+            // Finishing an already-applied uninstall does not execute another MSI
+            // or any cached application binary. A later setup may therefore
+            // complete that removal using the transaction-owned MSI digest and
+            // the product-wide immutable signed-driver payload. All earlier,
+            // ambiguous, install, upgrade and legacy-migration phases remain
+            // bound to the exact setup that created them.
+            if (!CanFinalizeUninstallWithJournalPackage(record))
+                throw new InvalidDataException("Journal belongs to another setup package.");
+            VerifyFile(Path.Combine(Cache, "HidHide.Unified.Preview.msi"), record.PackageHash);
+            Payload.Verify(Path.Combine(ProtectedJournal.Root, "payload"));
+            return;
+        }
+        foreach (var item in index) VerifyFile(Path.Combine(Cache, item.Key), item.Value);
         if (record.PriorUnified != null) VerifyFile(Path.Combine(Cache, "PriorUnified.msi"), record.PriorUnified.PackageHash);
         foreach (var legacy in record.Legacy)
         {
@@ -93,6 +108,15 @@ public sealed class ControllerStore
             if (index[name] != expected) throw new InvalidDataException("Recovery media does not match original legacy file evidence.");
         }
         Payload.Verify(Path.Combine(ProtectedJournal.Root, "payload"));
+    }
+    public static bool CanFinalizeUninstallWithJournalPackage(SetupRecord record)
+    {
+        if (record == null) return false;
+        if (record.Operation != Operation.Uninstall || record.Legacy == null || record.Legacy.Count != 0 || record.PriorUnified != null || record.MsiFailureReported ||
+            record.PackageProduct == Guid.Empty || record.BeforeMsiProduct != record.PackageProduct ||
+            !System.Text.RegularExpressions.Regex.IsMatch(record.PackageHash ?? "", "\\A[A-F0-9]{64}\\z")) return false;
+        return record.Phase is SetupPhase.MsiApplied or SetupPhase.Restoring or SetupPhase.Complete ||
+            record.Phase == SetupPhase.WaitingForReboot && record.ResumePhase == SetupPhase.MsiApplied;
     }
     public void PreparePackageRecord(SetupRecord record, IReadOnlyList<HidHide.Installer.InstalledProduct> products)
     {

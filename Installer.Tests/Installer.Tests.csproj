@@ -9,5 +9,7 @@
     <Compile Include="../Installer/ProductContract.cs" Link="ProductContract.cs" />
     <Compile Include="../Installer/DriverFilters.cs" Link="DriverFilters.cs" />
     <Compile Include="../Installer/ExecutableArchitecture.cs" Link="ExecutableArchitecture.cs" />
+    <Compile Include="../Installer/DirectMsiPolicy.cs" Link="DirectMsiPolicy.cs" />
+    <Compile Include="../Installer/MaintenanceUser.cs" Link="MaintenanceUser.cs" />
   </ItemGroup>
 </Project>

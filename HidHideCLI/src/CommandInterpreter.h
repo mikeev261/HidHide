@@ -82,8 +82,6 @@ namespace HidHide
         // Note that this doesn't imply that the file actually exists; application registration may go in advance of its actual installation
         std::wstring ValOneFullyQualifiedExecutablePath(_In_ Args const& args) const;
 
-        std::wstring ValAppProfileCommand(_In_ Args const& args) const;
-
         // Summarizes the commands supported
         void Help(_In_ Args const& args) const;
 
@@ -104,12 +102,6 @@ namespace HidHide
 
         // Lists the registered applications
         void AppList(_In_ Args const& args) const;
-
-        void AppProfileList(_In_ Args const& args) const;
-        void AppProfileCreate(_In_ Args const& args);
-        void AppProfileDelete(_In_ Args const& args);
-        void AppProfileAdd(_In_ Args const& args);
-        void AppProfileDel(_In_ Args const& args);
 
         // Hide the device specified
         void DevHide(_In_ Args const& args);

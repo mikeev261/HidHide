@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <ClCompile Include="src\EditorService.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\EditorService.h"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="src\ProfilesView.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="src\ProfilesView.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
     <Filter Include="Source Files">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
@@ -25,13 +31,7 @@
     <ClInclude Include="src\ActiveStateView.h" />
     <ClInclude Include="src\ManagerActivation.h" />
     <ClInclude Include="src\PendingDeviceRefresh.h" />
-    <ClInclude Include="src\AppProfilesDlg.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\ProfileProcessMatch.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ProfileManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="stdafx.h">
@@ -87,12 +87,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\HidHideClientDlg.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\AppProfilesDlg.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\ProfileManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="stdafx.cpp">

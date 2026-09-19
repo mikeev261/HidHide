@@ -30,9 +30,6 @@ class Build : NukeBuild
     [Parameter("Verified unchanged x64 driver payload directory (or HIDHIDE_DRIVER_PAYLOAD).")]
     readonly string? DriverPayload = Environment.GetEnvironmentVariable("HIDHIDE_DRIVER_PAYLOAD");
 
-    [Parameter("Verified upstream recovery EXE (or HIDHIDE_UPSTREAM_RECOVERY).")]
-    readonly string? UpstreamRecovery = Environment.GetEnvironmentVariable("HIDHIDE_UPSTREAM_RECOVERY");
-
     [Parameter("Windows SDK signtool.exe for kernel catalog verification.")]
     readonly string? SignTool;
 
@@ -98,12 +95,14 @@ class Build : NukeBuild
             // supplied to the packaging stage unchanged.
             CopyFileToDirectory(OutputRoot / "HidHideClient.exe", StageDir, FileExistsPolicy.Fail);
             CopyFileToDirectory(OutputRoot / "HidHideCLI.exe", StageDir, FileExistsPolicy.Fail);
+            ProcessTasks.StartProcess("pwsh.exe",
+                $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "BuildEditor.ps1"}\" -Destination \"{StageDir / "Editor"}\"", RootDirectory).AssertZeroExitCode();
         });
 
     Target InstallerTests => _ => _
         .Executes(() =>
         {
-            foreach (var project in new[] { "Installer.Tests", "Installer.Driver.Tests", "Installer.Controller.Tests", "Installer.Bootstrapper.Tests" })
+            foreach (var project in new[] { "Installer.Tests", "Installer.Driver.Tests", "Installer.Controller.Tests" })
                 ProcessTasks.StartProcess("dotnet", $"run --project \"{RootDirectory / project}\" -c Release", RootDirectory)
                     .AssertZeroExitCode();
             string evidenceArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "TestReleaseEvidence.ps1"}\"";
@@ -118,8 +117,7 @@ class Build : NukeBuild
                 throw new InvalidOperationException("Unified setup supports only x64; ARM64 applications may be compiled separately.");
             var signingTool = ResolveSignTool();
             string? driverPayload = DriverPayload?.Trim('"');
-            string? upstreamRecovery = UpstreamRecovery?.Trim('"');
-            if (string.IsNullOrWhiteSpace(driverPayload) || string.IsNullOrWhiteSpace(upstreamRecovery))
+            if (string.IsNullOrWhiteSpace(driverPayload))
             {
                 var acquired = ArtifactsDirectory / "driver-payload" / Guid.NewGuid().ToString("N");
                 var archiveCache = ArtifactsDirectory / "driver-cache";
@@ -127,16 +125,13 @@ class Build : NukeBuild
                     $"-Out \"{acquired}\" -Cache \"{archiveCache}\" -SignTool \"{signingTool}\"";
                 ProcessTasks.StartProcess("pwsh.exe", acquireArguments, RootDirectory).AssertZeroExitCode();
                 if (string.IsNullOrWhiteSpace(driverPayload)) driverPayload = acquired;
-                // The acquisition helper verifies this manifest and archive before returning.
-                using var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(RootDirectory / "build" / "driver-payload.json"));
-                if (string.IsNullOrWhiteSpace(upstreamRecovery)) upstreamRecovery = archiveCache / manifest.RootElement.GetProperty("archiveName").GetString()!;
             }
             var outDir = ArtifactsDirectory / "setup" / ("x64-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
             string setupArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "BuildUnifiedSetup.ps1"}\" " +
-                $"-Staging \"{StageDir}\" -DriverPayload \"{driverPayload}\" -UpstreamRecovery \"{upstreamRecovery}\" " +
+                $"-Staging \"{StageDir}\" -DriverPayload \"{driverPayload}\" " +
                 $"-SignTool \"{signingTool}\" -Out \"{outDir}\"";
             ProcessTasks.StartProcess("pwsh.exe", setupArguments, RootDirectory).AssertZeroExitCode();
-            string verificationArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "TestUnifiedPreview.ps1"}\" -Msi \"{outDir / "msi" / "HidHide.Unified.Preview.msi"}\"";
+            string verificationArguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{RootDirectory / "build" / "TestUnifiedPreview.ps1"}\" -Msi \"{outDir / "HidHide.Profiles.msi"}\"";
             ProcessTasks.StartProcess("pwsh.exe", verificationArguments, RootDirectory).AssertZeroExitCode();
         });
 

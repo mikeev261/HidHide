@@ -10,8 +10,8 @@ namespace HidHide.Installer;
 // deliberately separate from same-family version ordering.
 public static class ProductContract
 {
-    public const string Name = "HidHide (mikeev261 fork)";
-    public const string Publisher = "mikeev261";
+    public const string Name = "HidHide Profiles";
+    public const string Publisher = "HidHide Profiles";
     public static readonly Guid BundleUpgradeCode = new("C62D8280-B0B1-42FD-8969-084CC64F9D5B");
     public static readonly Guid MsiUpgradeCode = new("A7F7B763-29B4-47FB-9B00-DB18AFA5EB32");
     public static readonly Guid UpstreamUpgradeCode = new("8822CC70-E2A5-4CB7-8F14-E27101150A1D");

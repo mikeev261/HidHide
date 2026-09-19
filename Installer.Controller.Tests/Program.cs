@@ -72,6 +72,38 @@ static class Tests
         Check(UpgradeProtocol.OlderVersion("2.1.0.0", "2.2.0.0"), "older compatible bundle allowed");
         Check(!UpgradeProtocol.OlderVersion("2.1.0.0", "2.1.0") && !UpgradeProtocol.OlderVersion("2.1.0.1", "2.1.0.0"), "same MSI version rebuilt bundle rejected");
         Check(!UpgradeProtocol.OlderVersion("2.2.0.0", "2.1.0.0") && !UpgradeProtocol.OlderVersion("bad", "2.1.0.0"), "newer or malformed related bundle rejected");
+        {
+            var r = Record();
+            r.Operation = Operation.Uninstall;
+            r.PackageProduct = ProductContract.UnifiedProductCode(Version.Parse(r.Version));
+            r.BeforeMsiProduct = r.PackageProduct;
+            r.PackageHash = new string('A', 64);
+            foreach (SetupPhase phase in new[] { SetupPhase.MsiApplied, SetupPhase.Restoring, SetupPhase.Complete })
+            {
+                r.Phase = phase;
+                Check(ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "later setup can finish journal-bound post-MSI uninstall phase " + phase);
+            }
+            r.Phase = SetupPhase.WaitingForReboot; r.ResumePhase = SetupPhase.MsiApplied;
+            Check(ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "later setup can finish journal-bound uninstall after required reboot");
+            foreach (SetupPhase phase in new[] { SetupPhase.Prepared, SetupPhase.RemovingLegacy, SetupPhase.LegacyRemoved, SetupPhase.MsiPending, SetupPhase.RecoveryRequired })
+            {
+                r.Phase = phase;
+                Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected before completed MSI removal: " + phase);
+            }
+            r.Phase = SetupPhase.WaitingForReboot; r.ResumePhase = SetupPhase.RecoveryRequired;
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected for ambiguous rollback reboot");
+            r.Phase = SetupPhase.MsiApplied; r.ResumePhase = SetupPhase.MsiApplied;
+            r.Operation = Operation.Install;
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected for install recovery");
+            r.Operation = Operation.Uninstall; r.Legacy.Add(Upstream());
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected for legacy migration recovery");
+            r.Legacy.Clear(); r.MsiFailureReported = true;
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected after MSI failure");
+            r.MsiFailureReported = false; r.BeforeMsiProduct = Guid.NewGuid();
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected without exact removed product evidence");
+            r.BeforeMsiProduct = r.PackageProduct; r.PackageHash = "bad";
+            Check(!ControllerStore.CanFinalizeUninstallWithJournalPackage(r), "package mismatch rejected without valid journal package digest");
+        }
         string ready = Ready(); var parsed = ReadySnapshot.Parse(ready, Sid);
         var storedReady = ReadySnapshot.Parse(Ready(false, true), Sid);
         Check(!storedReady.DriverPresent && storedReady.BaselineAvailable && storedReady.Active, "ordinary-user stored baseline distinct from live driver");
@@ -210,7 +242,7 @@ static class Tests
                 Filters = Enumerable.Range(0, 3).Select(_ => new FilterState { Exists = true, Entries = new[] { "HidHide" } }).ToArray(),
                 Settings = new DriverSettings { Active = false, Whitelist = SettingsCodec.Encode(new[] { "feeder" }), Blacklist = SettingsCodec.Encode(new[] { "original-baseline" }) } };
             var h = new Fake(r); var tx = new SetupTransaction(h, r); tx.Advance(); tx.CancelBeforeApply();
-            r.BeforeMsiFiles = new[] { "HidHideCLI.exe", "HidHideClient.exe", "mfc140u.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "Driver/HidHide.inf", "Driver/HidHide.sys", "Driver/hidhide.cat", "Driver/LICENSE.rtf", "shortcut" }.ToDictionary(x => x, _ => "absent");
+            r.BeforeMsiFiles = new[] { "HidHideCLI.exe", "HidHideClient.exe", "mfc140u.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "Driver/HidHide.inf", "Driver/HidHide.sys", "Driver/hidhide.cat", "Driver/LICENSE.rtf", "shortcut/legacy-unified", "shortcut/current" }.ToDictionary(x => x, _ => "absent");
             var previous = new TransactionRecord { Id = r.Id, InitiatingSid = r.Sid, Operation = Operation.Repair, Before = r.Before };
             WindowsSetupHost.VerifyNativeBeforeReplacingPreparation(r, previous, r.Before);
             Check(r.MsiRetryCount == 0 && r.Phase == SetupPhase.LegacyRemoved, "cancelled preparation uses baseline proof without failed-MSI retry count");
@@ -247,6 +279,15 @@ static class Tests
             Reject(() => MsiRollbackRecovery.VerifyNative(r, native, new DriverState { ServiceExists = true }), "changed native state blocks retry");
             var original = new Dictionary<string, string> { ["file"] = new string('A', 64) };
             Check(!MsiRollbackRecovery.Same(original, new Dictionary<string, string> { ["file"] = new string('B', 64) }) && !MsiRollbackRecovery.Same(original, new Dictionary<string, string>()), "changed or missing application evidence blocks retry");
+            var payloadNames = new[] { "HidHideCLI.exe", "HidHideClient.exe", "mfc140u.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "Driver/HidHide.inf", "Driver/HidHide.sys", "Driver/hidhide.cat", "Driver/LICENSE.rtf" };
+            var legacyEvidence = payloadNames.Concat(new[] { "shortcut" }).ToDictionary(x => x, _ => "absent");
+            var currentEvidence = payloadNames.Concat(new[] { "shortcut/legacy-unified", "shortcut/current" }).ToDictionary(x => x, _ => "absent");
+            MsiRollbackRecovery.ValidateFiles(legacyEvidence); MsiRollbackRecovery.ValidateFiles(currentEvidence);
+            Check(MsiRollbackRecovery.Same(legacyEvidence, currentEvidence), "2.1.3 shortcut evidence maps to the exact legacy-unified path");
+            currentEvidence["shortcut/current"] = new string('A', 64);
+            Check(!MsiRollbackRecovery.Same(legacyEvidence, currentEvidence), "legacy evidence cannot prove an unrecorded new-name shortcut was restored");
+            currentEvidence["shortcut/current"] = "absent"; currentEvidence["shortcut/legacy-unified"] = new string('A', 64);
+            Check(!MsiRollbackRecovery.Same(legacyEvidence, currentEvidence), "legacy-unified shortcut changes block rollback proof");
         }
         {
             var r = Record(); r.Legacy.Add(Upstream()); r.Legacy[0].RemovalIntent = true; var h = new Fake(r);

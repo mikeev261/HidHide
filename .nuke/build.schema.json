@@ -124,10 +124,6 @@
         "SignTool": {
           "type": "string",
           "description": "Windows SDK signtool.exe for kernel catalog verification"
-        },
-        "UpstreamRecovery": {
-          "type": "string",
-          "description": "Verified upstream recovery EXE (or HIDHIDE_UPSTREAM_RECOVERY)"
         }
       }
     },

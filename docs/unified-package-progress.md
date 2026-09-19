@@ -1,5 +1,88 @@
 # Unified package progress
 
+## Editor performance and device presentation — 2026-09-19
+
+Candidate 2.1.13 removes the native pipe polling delay, retains one authenticated
+editor bridge per window session, and reuses repository versions within each load.
+The window starts alongside native initialization. Renderer snapshots run one at a
+time, back off while unchanged, and stop while the native window is hidden. A slow
+snapshot can no longer be invalidated indefinitely by the next polling interval.
+
+Application profiles read their actual executable icon asynchronously with bounded
+caching. Device icons use product metadata and conservative category matching;
+unrecognized devices retain a neutral icon. Hide disconnected is a persistent,
+one-click view preference that preserves all saved rules and pending changes.
+
+The reusable Sol specialist is `.codex/agents/hidhide-performance.toml`. Performance
+findings, measurements and validation boundaries are in `docs/performance-review.md`.
+No installed application or physical driver policy was changed during this work.
+
+## Electron editor reconstruction — 2026-09-19
+
+Candidate 2.1.12 replaces the production MFC profile page with the approved
+charcoal/red Electron + React editor. The native coordinator continues monitoring
+when all Electron processes have exited. Profile definitions, baseline recovery,
+ordinary-user ownership and signed driver payload remain under existing native
+services. Editor mutations use authenticated IPC and repository version/hash checks.
+
+UI/UX review identified and repaired draft navigation, recovery staging, status
+accuracy, dialog error visibility, control contrast and compact/zoom layout issues.
+Evidence and remaining host-validation boundaries are in docs/electron-editor.md.
+
+
+## Settings uninstall repair — 2026-09-18
+
+Version 2.1.11 fixes the 2.1.10 Settings-removal failure: Windows Installer supplied
+an elevated consent token and the preparation action rejected it before
+InstallInitialize. Preparation now launches a verified ordinary same-user/session
+helper using the authenticated MSI client token, with visible MSI failure reporting.
+Uninstall also retains applications and product registration through its native
+restart checkpoint, then requests full removal on continuation. This avoids the
+old ForceReboot sequence unregistering the product and losing its cached package.
+Exact owned startup commands are removed in the ordinary user's context; profiles
+and the stored startup preference are preserved.
+
+The user's old 2.1.10 installation was manually removed after their restart. Native
+inspection verifies no HidHide node, package, service, SYS, control interface or
+filter references. Windows Installer completed the old suspended app transaction;
+no product, app directory, shortcut, startup command or continuation remains. Both
+profile JSON hashes match their pre-removal backups. Recovery evidence is retained
+in `artifacts/uninstall-recovery-20260918`.
+
+Release x64 unified Ci passes: 159 native tests, 532 managed checks, 83 MSI
+structure checks and 7 source-evidence checks. Seven token checks also pass under
+an elevated parent. A disposable driver-free MSI reproduces the elevated consent
+path and proves retained-file/product restart suspension, successful continuation
+and error callbacks. Its product, files, marker and stale test continuation were
+removed. Evidence: `artifacts/installer-fix-validation/README.md`.
+
+The rebuilt unsigned 2.1.11 MSI includes the existing dark UI and unchanged verified
+Microsoft-signed driver. It has not been installed on this host. A complete native
+install/reboot/uninstall cycle for this exact artifact remains unperformed; the
+driver-free probe is not that acceptance test. Old 2.1.10 in-place upgrade is not
+validated because its cached MSI retains the old reboot defect. No publication,
+merge or automatic restart occurred.
+
+## Public MSI checkpoint — 2026-09-17
+
+The custom Burn bootstrapper is retired from the release path. Version 2.1.8 is
+built as one directly launchable, visible per-machine MSI using WiX's standard
+welcome/license, progress, completion, repair and remove dialogs. The former
+private-MSI launch condition and `ARPSYSTEMCOMPONENT` hiding are gone.
+
+An immediate ordinary-user action performs profile-coordinator handoff for
+repair/uninstall; elevated deferred actions accept only bounded identity fields,
+derive fixed protected paths, verify the pinned driver payload, and own the native
+transaction. Fresh install has no legacy-package dependency. Windows Installer's
+`ForceReboot` suspends fresh install, repair and uninstall before commit, and the
+post-reboot action verifies/finishes the driver transaction before
+`InstallFinalize`. The package requires interactive MSI UI, so Windows never
+restarts without its standard prompt.
+
+Structural CI now asserts standard dialog presence, public visibility, privilege
+separation, action ordering and reboot continuation. This checkpoint still needs
+a real clean install/reboot/launch/profile-save/uninstall test on the exact MSI.
+
 Current scope: practical, generally working unsigned release tested on the user's local Windows 11 x64 PC. The user explicitly cancelled VM testing and deferred the exhaustive legacy, interrupted-install and power-loss matrix. No automatic publishing or merge. Driver signatures, Secure Boot, IOCTL contracts and user settings remain unchanged.
 
 ## Current checkpoint — 2026-09-08 evening
@@ -14,7 +97,7 @@ The user's enabled startup preference has been restored to the verified installe
 
 Same-artifact repair completed with exit 0 and no restart, including shutdown and background restart of the running coordinator. Transaction 6bd40111-a0c6-47b5-817f-41ccb9749802 is Complete/Committed. A temporary process profile applied exactly one joystick interface in the real driver's effective state and restored the exact baseline after process exit; original profiles were preserved. The user exercised tray Exit, the process ended, baseline was verified, and no HidHide crash event was found. Evidence is under artifacts/local-validation-20260908.
 
-Reopening the background app exposed a real usability defect: the existing window opened, but the second process also displayed an ownership warning. Commit 85bce35 fixes acknowledged activation within the same user/session and preserves the warning when no local owner responds. Version 2.1.1.0 passed clean unified Ci (95 native tests, managed suites) and 45 MSI checks. Its normal local upgrade and repair both returned 0 without reboot. Installed reopening now opens the existing window and the second process exits 0 with no popup. About correctly distinguishes fork 2.1.1.0 from driver 1.4.181.0.
+Reopening the background app exposed a real usability defect: the existing window opened, but the second process also displayed an ownership warning. Commit 85bce35 fixes acknowledged activation within the same user/session and preserves the warning when no local owner responds. Version 2.1.1.0 passed clean unified Ci (95 native tests, managed suites) and 45 MSI checks. Its normal local upgrade and repair both returned 0 without reboot. Installed reopening now opens the existing window and the second process exits 0 with no popup. About correctly distinguishes product 2.1.1.0 from driver 1.4.181.0.
 
 The repaired final build also passed a real effective-state profile activation/restoration check with the original profiles preserved. One repair attempt was refused before mutation while About was open; closing the dialog and retrying succeeded. Close child dialogs before maintenance. Both attempt logs are retained.
 
@@ -27,3 +110,103 @@ Clean unified Ci and full unsigned packaging passed for this candidate, includin
 Practical local installation, repair, reopening and automatic profile state changes have been validated. Controller enumeration and effective profile settings were exercised locally; actual game input remains a user check. Standalone removal and normal tray exit of the final candidate were not repeated (normal removal passed on 2.0 and normal tray exit on 2.1). The broader failure matrix remains untested. No further restart or setup action is currently required.
 
 The broader release matrix remains documented in docs/release-readiness.md as deferred coverage. Historical host/VM results are in docs/native-lifecycle-testing.md and docs/release-vm-testing.md; implementation history is in docs/unified-package-history.md. No further VM work is requested.
+
+## Source checkpoint — 2026-09-13
+
+Live restart evidence disproved the 2.1.3 persistence claim. The installed client
+matched the reviewed 2.1.3 bytes, the ordinary-user `ConfigurationV1` blob remained
+valid and contained the F1 profile plus two device paths, but the resident
+coordinator served an empty device set. The AppProfiles key was written about two
+seconds after process start, while no runtime key remained afterward. This proves
+that startup reconciliation still reached the profile writer; a surviving or
+missing recovery journal alone does not explain the failure.
+
+Version 2.1.4 separates the profile catalog transaction from driver transitions.
+Startup, scan, recovery, pause, and exit now commit a `DriverConfiguration` value
+that cannot contain profiles. Only an explicit profile mutation can write
+`ConfigurationV1`, after an expected/live conflict check and read-back. Coordinator
+reads refresh the durable catalog independently. Focused regression coverage
+asserts that an automatic startup transition exposes only driver fields to its
+commit callback and retains both device associations.
+
+The same 2.1.3 install also logged a post-MSI bootstrapper crash when disposal
+invoked a form whose STA loop had already ended. Disposal is now idempotent and
+skips cross-thread invocation after close, with a completed-window regression.
+The displayed product and publisher name is now **HidHide Profiles**. Historical
+maintenance registry/directories, bundle/MSI upgrade identities, driver/service
+identity, and legacy companion paths remain unchanged for recovery compatibility.
+This source checkpoint is not installed or live-validated.
+
+## Profiles-first source checkpoint — 2026-09-13
+
+The client now opens directly into the native Profiles workspace. A fresh ordinary-
+user JSON repository owns complete Global/application policies and global Allowed
+apps; the CLI exposes no profile mutation verbs. Apply uses revision-plus-SHA CAS and
+recoverable multi-file replacement. The single `HidHideClient.exe` process hosts
+both UI and coordinator, so terminating that process destroys both roles.
+
+Automatic discovery uses one process snapshot per active scan, exact verified paths,
+PID-plus-creation-time caching, and changed-only UI notification. Scanning sleeps
+indefinitely when Automatic matching is unnecessary. Driver recovery remains a
+driver-only journal, and requested state is not presented as observed without a
+fresh readback. The nine-mode isolated Release performance matrix passed its
+ten-minute CPU and memory budgets with deterministic no-op enforcement. Installed-
+driver, physical-input and VM lifecycle acceptance remain outstanding.
+
+## Recovery UX checkpoint — 2026-09-13
+
+Version 2.1.5 fixes a host-reproduced post-reboot uninstall dead end. The 2.1.4
+private MSI was removed successfully and its native driver removal requested a
+restart. After reboot, a later candidate correctly found the protected transaction
+but incorrectly compared its current application/MSI cache index to the earlier
+transaction's cache. That rejected continuation with
+`failure/maintenance/InvalidDataException/0x80131501`.
+
+A later setup may now finish a prior uninstall with a different package only when
+the journal proves the MSI removal already completed and the transaction is in a
+post-MSI uninstall phase. It verifies the prior MSI against the digest stored in
+that journal and separately verifies the unchanged signed-driver payload. Install,
+upgrade, legacy migration, pre-MSI, failed-MSI and ambiguous recovery phases remain
+bound to their originating package. The recovery window exposes one normal
+continuation action by default; it labels a known pending uninstall as **Finish
+uninstall**, and offers legacy restoration only when protected metadata says a
+legacy migration actually exists. Existing recovery evidence is not deleted.
+
+## Windows setup UX and restart checkpoint — 2026-09-13
+
+Live 2.1.5 evidence showed a successful MSI followed by controller exit `3010`.
+The protected maintenance marker correctly remained while the user launched the
+app before restarting, but the custom completion screen did not communicate the
+required next action clearly enough.
+
+Version 2.1.6 uses a conventional welcome, progress, and completion layout with
+explicit Install, Repair, and Uninstall actions. Restart-required completion now
+offers **Restart now** and **Restart later**, explains that setup must be run again
+after sign-in, and records explicit restart consent before requesting a Windows
+restart. Durable display metadata distinguishes a restart-required transaction;
+the application reports actionable restart-and-resume guidance while retaining
+the same fail-closed configuration guard.
+
+The Release CI covers the new window states and restart choice without restarting
+or otherwise mutating the test host. This source checkpoint still requires live
+upgrade and reboot/resume validation.
+
+## Profiles client startup repair — 2026-09-14
+
+Live 2.1.5 launch evidence and a first-chance debugger trace identified the
+startup failure before the later `0xc0000409` report. The production enforcement
+adapter left its maintenance admission and barrier names empty, while every
+isolated adapter test supplied explicit test names. Initial profile reconciliation
+therefore called `OpenEventW` with an empty name and let the resulting fail-closed
+maintenance exception escape the MFC initialization path.
+
+Version 2.1.7 routes production construction through the same transport
+normalization used by tested adapters and gives the transport safe production
+defaults. Maintenance-inspection failures now remain fail-closed as a visible
+profile status instead of terminating the application, and a future top-level
+standard exception reports its actual diagnostic text. The production-adapter
+acceptance phase checks the default names and injects a maintenance-inspection
+failure through the real native window. A controlled host launch confirmed that
+the rebuilt client remained alive past initialization against the installed
+driver; normal tray exit and installed-package behavior remain user acceptance
+gates for the exact 2.1.7 artifact.

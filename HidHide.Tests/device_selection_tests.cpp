@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <gtest/gtest.h>
 #include "DeviceSelection.h"
+#include "ProfileDeviceProjection.h"
 #include "../HidHideClient/src/PendingDeviceRefresh.h"
 using namespace HidHide;
 namespace
@@ -58,6 +59,34 @@ TEST(DeviceSelection, XusbAliasesSelectOnlyTheirAssociatedInterfaces)
     groups[0].SetChecked(2, true);
     EXPECT_EQ((std::set<DeviceInstancePath>{L"base", L"hid1", L"hid2", L"xusb1", L"xusb2"}),
         DeviceSelectionPaths({L"xusb1"}, groups));
+}
+
+TEST(DeviceSelection, ProfilesProjectionPreservesCompositeXusbContainerAndDisconnectedState)
+{
+    auto source = Composite(); auto& devices = source.begin()->second;
+    devices[0].xusbDeviceInstancePath = L"xusb1"; devices[1].xusbDeviceInstancePath = L"xusb2";
+    devices[0].present = devices[1].present = false;
+    auto projected = HidHide::Profiles::ProjectProfileDeviceGroups(source);
+    ASSERT_EQ(1u, projected.size()); EXPECT_FALSE(projected[0].connected);
+    EXPECT_NE(std::wstring::npos, projected[0].friendly.find(L"composite group"));
+    EXPECT_EQ((std::vector<std::wstring>{L"base", L"hid1", L"hid2", L"xusb1", L"xusb2"}), projected[0].policyIdentities);
+}
+TEST(DeviceSelection, ProfileArtworkUsesProductMetadataBeforeGenericHidUsage)
+{
+    auto device = Device(L"HID\\presentation");
+    for (auto const& sample : std::vector<std::pair<std::wstring,std::wstring>>{
+        {L"Elgato Stream Deck",L"keypad"},{L"Logitech BRIO webcam",L"camera"},
+        {L"Arctis Pro headset",L"headphones"},{L"Simucube 2 Pro",L"wheel"},
+        {L"Heusinkveld Ultimate+ pedals",L"pedals"},{L"Simucube ActivePedal",L"pedals"},
+        {L"Heusinkveld Handbrake",L"handbrake"}})
+    {
+        device.product=sample.first;
+        auto groups=HidHide::Profiles::ProjectProfileDeviceGroups({{L"USB device",{device}}});
+        ASSERT_EQ(1u,groups.size()); EXPECT_EQ(sample.second,groups[0].kind);
+        EXPECT_EQ((std::vector<std::wstring>{L"HID\\presentation"}),groups[0].policyIdentities);
+    }
+    device.product.clear();device.usage=L"Vendor defined";device.gamingDevice=false;
+    EXPECT_EQ(L"unknown",HidHide::Profiles::ProfileDeviceKind(L"Unidentified interface",{device}));
 }
 TEST(DeviceSelection, IncompleteAndUnsafeContainersRemainOutsideEditableScope)
 {

@@ -95,6 +95,11 @@ public sealed class Application : BootstrapperApplication
         args.Action = 0; applied.Set(); base.OnApplyComplete(args);
     }
     static void Wait(ManualResetEventSlim signal, int ms, string step) { if (!signal.Wait(ms)) throw new TimeoutException(step + " timed out; recovery data is retained."); }
+    static void RestartWindows()
+    {
+        Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/r /t 0 /d p:2:4 /c \"HidHide Profiles setup requires a restart.\"")
+        { UseShellExecute = false, CreateNoWindow = true });
+    }
     protected override void Run()
     {
         int exit = 1;
@@ -132,7 +137,7 @@ public sealed class Application : BootstrapperApplication
                 engine.Quit(0); return;
             }
             if (command.Action == LaunchAction.Help)
-            { MessageBox.Show("Install, repair or uninstall HidHide. Start as the ordinary configuration user. Setup never restarts Windows automatically.", "HidHide (mikeev261 fork)"); engine.Quit(0); return; }
+            { MessageBox.Show("Install, repair or uninstall HidHide Profiles. Start as the ordinary configuration user. Setup never restarts Windows automatically.", "HidHide Profiles"); engine.Quit(0); return; }
             if (command.Action != LaunchAction.Install && command.Action != LaunchAction.Modify && command.Action != LaunchAction.Repair && command.Action != LaunchAction.Uninstall)
                 throw new InvalidOperationException("This setup supports install, repair, uninstall and recovery only.");
             using (var user = WindowsIdentity.GetCurrent())
@@ -144,9 +149,12 @@ public sealed class Application : BootstrapperApplication
             bool resume = marker != null;
             Guid id = resume ? Guid.ParseExact(marker!.GetValue("Transaction") as string ?? "", "D") : Guid.NewGuid();
             string operation = command.Action == LaunchAction.Uninstall ? "uninstall" : command.Action == LaunchAction.Repair || command.Action == LaunchAction.Modify ? "repair" : "install";
+            string? recoveryOperation = resume ? marker!.GetValue("Operation") as string : null;
+            bool canRestoreLegacy = resume && marker!.GetValue("CanRestoreLegacy") is int restoreValue && restoreValue == 1;
+            bool restartPending = resume && marker!.GetValue("RestartRequired") is int restartValue && restartValue == 1;
             if (command.Display == Display.Full)
             {
-                progressWindow = new ProgressWindow(operation, resume);
+                progressWindow = new ProgressWindow(operation, resume, recoveryOperation: recoveryOperation, canRestoreLegacy: canRestoreLegacy, restartPending: restartPending);
                 if (!progressWindow.WaitForStart()) { engine.Quit(1602); return; }
                 progressWindow.Update("Checking installed packages…");
             }
@@ -215,8 +223,18 @@ public sealed class Application : BootstrapperApplication
             if (exit == 0 && control != "complete:legacy") UserCompletion.Apply(control == "complete:uninstall");
             if (progressWindow != null)
             {
-                progressWindow.Finish(control == "complete:legacy" ? "The previous installation and configuration were restored and verified. Run setup again when you are ready to migrate." : exit == 0 ? "HidHide maintenance completed and verified." : progressWindow.RestoreLegacyRequested ? "Restart Windows, then run this setup and select Restore previous installation again. Recovery may require several restarts; configuration remains suspended until verification completes." : "Restart Windows when convenient, then run this setup again to finish verification. Configuration remains suspended until recovery completes.", exit == 0);
+                string completion = control == "complete:legacy" ? "The previous installation and configuration were restored and verified."
+                    : control == "complete:uninstall" ? "HidHide Profiles was removed successfully."
+                    : control == "complete:install" ? "HidHide Profiles is installed and ready to use."
+                    : progressWindow.RestoreLegacyRequested ? "Restart Windows, then run this setup again and choose Restore previous version."
+                    : "Restart Windows to finish configuring the device driver. After signing back in, run this same setup again to complete verification. HidHide Profiles cannot be used until setup finishes.";
+                progressWindow.Finish(completion, exit == 0, exit == 3010);
                 progressWindow.WaitForClose();
+                if (exit == 3010 && progressWindow.RestartRequested)
+                {
+                    try { RestartWindows(); }
+                    catch (Exception error) { MessageBox.Show("Windows could not be restarted automatically. Restart it manually, then run this setup again.\n\n" + error.Message, "HidHide Profiles Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                }
             }
         }
         catch (Exception error)

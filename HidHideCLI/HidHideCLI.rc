@@ -79,7 +79,7 @@ IDR_DIALOG_APPLICATION  ICON       "src\\Application.ico"
 
 STRINGTABLE
 BEGIN
-    IDS_DIALOG_APPLICATION          "HidHide command line interface"
+    IDS_DIALOG_APPLICATION          "HidHide Profiles command line interface"
     IDS_CONTROL_DEVICE_NAME         "\\\\.\\HidHide"
     IDS_HELP_GUIDANCE               "The above commands can be sequenced reducing the overall overhead involved."
     IDS_CONSOLE_GUIDANCE            "Type help for options. Press CTRL-Z to save changes and exit. Type Cancel to exit without saving changes."

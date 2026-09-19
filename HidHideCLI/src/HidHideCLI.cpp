@@ -18,6 +18,10 @@ namespace
             TRACE_ALWAYS(L"");
             if (__argc == 2 && std::wstring(__wargv[1]) == L"--maintenance-session")
                 HidHide::RunMaintenanceSession();
+            else if (__argc == 3 && std::wstring(__wargv[1]) == L"--maintenance-msi")
+                HidHide::RunMsiMaintenanceSession(__wargv[2]);
+            else if (__argc == 3 && std::wstring(__wargv[1]) == L"--maintenance-msi-uninstall")
+                HidHide::RunMsiMaintenanceSession(__wargv[2], true);
             else
                 HidHide::CommandInterpreter(false).Start(HidHide::CommandLineArguments());
             return (ERROR_SUCCESS);

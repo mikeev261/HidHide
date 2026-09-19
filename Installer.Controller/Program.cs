@@ -82,7 +82,7 @@ public static class Program
                     retained = OpenEventW(0x100000, false, @"Global\HidHide.AppProfiles.Maintenance.v1");
                     if (retained.IsInvalid) throw new InvalidOperationException("Recovery exclusion disappeared.");
                 }
-                host.MarkPending();
+                host.MarkPending(record);
                 if (restoreLegacy)
                 {
                     stage = "legacy-restoration";
@@ -92,6 +92,7 @@ public static class Program
                     return complete ? 0 : 3010;
                 }
                 var transaction = new SetupTransaction(host, record); SetupPhase phase = transaction.Advance();
+                if (phase == SetupPhase.WaitingForReboot) host.MarkPending(record);
                 if (phase == SetupPhase.MsiPending)
                 {
                     host.ReleaseForMsi(); wire.Write("apply:" + record.Operation.ToString().ToLowerInvariant());
@@ -107,6 +108,7 @@ public static class Program
                     }
                     if (result != "result:0" && result != "result:3010" && result != "result:1") throw new InvalidDataException("Invalid MSI result.");
                     host.Reacquire(id); phase = transaction.MsiCompleted(int.Parse(result.Substring(7)));
+                    if (phase == SetupPhase.WaitingForReboot) host.MarkPending(record);
                 }
                 wire.Write(phase == SetupPhase.Complete ? record.Operation == Operation.Uninstall ? "complete:uninstall" : "complete:install" : phase == SetupPhase.WaitingForReboot ? "reboot" : "recovery");
                 return phase == SetupPhase.Complete ? 0 : phase == SetupPhase.WaitingForReboot ? 3010 : 1;

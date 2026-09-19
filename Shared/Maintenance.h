@@ -22,6 +22,21 @@ namespace HidHide::Maintenance
         return false;
     }
 
+    inline bool DurableRestartRequired()
+    {
+        HKEY key{};
+        auto status = ::RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\mikeev261\\HidHide\\Maintenance", 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key);
+        if (status == ERROR_FILE_NOT_FOUND) return false;
+        if (status != ERROR_SUCCESS) throw std::runtime_error("Cannot inspect durable maintenance state; configuration is blocked");
+        DWORD value{}, type{}, size{ sizeof(value) };
+        status = ::RegQueryValueExW(key, L"RestartRequired", nullptr, &type, reinterpret_cast<BYTE*>(&value), &size);
+        ::RegCloseKey(key);
+        if (status == ERROR_FILE_NOT_FOUND) return false;
+        if (status != ERROR_SUCCESS || type != REG_DWORD || size != sizeof(value) || value > 1)
+            throw std::runtime_error("Durable maintenance state is invalid; configuration is blocked");
+        return value != 0;
+    }
+
     // The barrier is an event whose existence matters, not its signalled state.
     // An elevated setup worker may retain its own handle across an ordinary-user
     // session handoff. No reset/set operation can silently reopen admission.
@@ -47,7 +62,12 @@ namespace HidHide::Maintenance
             : lease(admissionName, 250)
         {
             if (!lease.Acquired()) throw std::runtime_error("Configuration admission is busy; retry shortly");
-            if (Active(barrierName)) throw std::runtime_error("HidHide maintenance is in progress; finish or cancel setup before configuring devices");
+            if (Active(barrierName))
+            {
+                if (std::wstring(barrierName) == BarrierName && DurableRestartRequired())
+                    throw std::runtime_error("HidHide Profiles setup is waiting for restart verification. Restart Windows if you have not already, then run setup again before opening HidHide Profiles");
+                throw std::runtime_error("HidHide Profiles setup has not finished. Complete or cancel setup before opening HidHide Profiles");
+            }
         }
     };
 

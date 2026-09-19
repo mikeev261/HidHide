@@ -1,0 +1,40 @@
+// Explicit development-only acceptance fixture. Never loaded by packaged builds.
+const clone=value=>JSON.parse(JSON.stringify(value));
+const ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000003'];
+let counter=10,fail='',unknown=false,disconnected=false,snapshotDelay=0,snapshotRequests=0,activeSnapshots=0,peakSnapshots=0;
+const profile=(id,name,kind,executablePath='')=>({schemaVersion:1,id,revision:1,name,kind,enabled:true,priority:0,executablePath,defaultVisibility:'visible',deviceRules:[],version:{revision:1,hash:id}});
+const devices=[['wheel','Simucube 2 Pro','Wheel base'],['pedals','Heusinkveld Ultimate+','Pedals'],['buttons','Button box','Controller'],['xbox','Xbox controller','Gamepad']].map(([id,name,detail])=>({id,name,detail,connected:true,identities:[id],current:id==='wheel'||id==='pedals'?'Hidden':'Visible'}));
+const initial={profiles:[profile(ids[0],'Default','global'),profile(ids[1],'Le Mans Ultimate','application','C:\\Games\\Le Mans Ultimate.exe'),profile(ids[2],'F1 25','application','C:\\Games\\F1 25.exe')],settings:{schemaVersion:1,revision:1,selectedGlobalId:ids[0],mode:'automatic',paused:false,startWithWindows:true,allowedApplications:['C:\\Program Files\\SimHub\\SimHub.exe']},settingsVersion:{revision:1,hash:'settings1'},activeId:ids[1],verified:true,status:'Running application profile applied and verified',conflict:false,repositoryIssues:[],devices};
+initial.profiles[1].deviceRules=[{identity:'wheel',friendlyName:'Simucube 2 Pro',visibility:'hidden'},{identity:'pedals',friendlyName:'Heusinkveld Ultimate+',visibility:'hidden'}];
+let state=clone(initial);
+function snapshot(){const result=clone(state);if(unknown){result.verified=false;result.status='Driver observation unavailable';result.devices.forEach(d=>d.current='Unknown');}return result;}
+function cas(expected,actual){if(!expected||expected.hash!==actual.hash)throw Error('Saved files changed. Discard to reload before applying.');}
+exports.request=async request=>{
+ if(disconnected)throw Error('Fixture engine disconnected.');
+ const q=clone(request);
+ if(fail&&q.command!=='snapshot'){const message=fail;fail='';throw Error(message);}
+ switch(q.command){
+ case 'snapshot':{snapshotRequests++;activeSnapshots++;peakSnapshots=Math.max(peakSnapshots,activeSnapshots);try{if(snapshotDelay)await new Promise(resolve=>setTimeout(resolve,snapshotDelay));return {ok:true,snapshot:snapshot()};}finally{activeSnapshots--;}}
+ case 'editor-state':return {ok:true};
+ case 'new':case 'import':return {ok:true,profile:{...profile('00000000-0000-4000-8000-'+String(++counter).padStart(12,'0'),q.name||'Imported profile',q.kind||'application',q.executable||'C:\\Games\\Imported.exe'),enabled:q.command!=='import',version:undefined}};
+ case 'apply':case 'settings':case 'delete':{
+  cas(q.expectedSettings,state.settingsVersion);
+  if(q.command!=='settings'){
+   const id=q.profile?.id||q.id,index=state.profiles.findIndex(p=>p.id===id);
+   if(index>=0)cas(q.expected,state.profiles[index].version);else if(q.expected)throw Error('Profile no longer exists.');
+   if(q.command==='delete')state.profiles.splice(index,1);
+   else{const p={...q.profile,revision:q.profile.revision+1,version:{revision:q.profile.revision+1,hash:'profile'+(++counter)}};if(index>=0)state.profiles[index]=p;else state.profiles.push(p);}
+  }
+  state.settings={...q.settings,revision:state.settings.revision+1};state.settingsVersion={revision:state.settings.revision,hash:'settings'+(++counter)};
+  state.activeId=state.settings.mode==='useGlobal'?state.settings.selectedGlobalId:ids[1];
+  const p=state.profiles.find(p=>p.id===state.activeId);state.devices.forEach(d=>d.current=state.settings.paused?'Visible':p?.deviceRules.find(r=>r.identity===d.id)?.visibility==='hidden'?'Hidden':'Visible');
+  return {ok:true,saved:true,applied:true,message:'Saved and applied.'};
+ }
+ case 'retry':unknown=false;return {ok:true,saved:false,applied:true,message:'Activation verified.'};
+ case 'backup':case 'export':return {ok:true};
+ case 'restore':state=clone(initial);return {ok:true,saved:true,applied:true};
+ default:throw Error('Unsupported fixture request: '+q.command);
+ }
+};
+exports.pick=kind=>({executable:'C:\\Games\\New game.exe',import:'C:\\Fixture\\profile.json',backup:'C:\\Fixture\\backup',restore:'C:\\Fixture\\backup',export:'C:\\Fixture\\export.json'})[kind]||null;
+exports.control=options=>{if(options.reset){state=clone(initial);unknown=false;disconnected=false;fail='';}if('snapshotDelay'in options)snapshotDelay=options.snapshotDelay;if('deviceError'in options)state.deviceError=options.deviceError;if(options.presentation){state.profiles[1].executablePath=options.executable||state.profiles[1].executablePath;const names=['Simucube 2 Pro','Heusinkveld Ultimate+ pedals','Elgato Stream Deck XL','Logitech BRIO webcam','Arctis headphones','Microphone','Keyboard','Mouse','Xbox gamepad','Unidentified USB interface'];state.devices=names.map((name,i)=>({id:i===0?'wheel':i===1?'pedals':'presentation'+i,name,detail:'',connected:true,identities:[i===0?'wheel':i===1?'pedals':'presentation'+i],current:i<2?'Hidden':'Visible'}));state.devices.push({id:'remembered',name:'Old steering wheel',detail:'',connected:false,identities:['remembered'],current:'Hidden'});state.profiles[1].deviceRules.push({identity:'remembered',friendlyName:'Old steering wheel',visibility:'hidden'});}if('fail'in options)fail=options.fail;if('unknown'in options)unknown=options.unknown;if('disconnected'in options)disconnected=options.disconnected;if(options.external){state.settingsVersion.hash='external'+(++counter);state.settings.revision++;}if(options.long){state.profiles[1].name='Le Mans Ultimate — endurance championship 日本語 '+('very long name '.repeat(8));state.devices[0].name='Simucube wheel — '+('long device name '.repeat(8));}if(options.many)state.devices=Array.from({length:80},(_,i)=>({...devices[i%4],id:'fixture'+i,identities:['fixture'+i],name:devices[i%4].name+' '+i}));return {...snapshot(),fixtureDiagnostics:{snapshotRequests,activeSnapshots,peakSnapshots}};};

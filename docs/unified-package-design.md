@@ -1,25 +1,31 @@
 # Unified HidHide package design
 
 Status: implementation contract, not a claim of completed lifecycle validation.
-Decision date: 2026-09-07. Source baseline:
+Original decision date: 2026-09-07; public-MSI revision: 2026-09-17. Source baseline:
 `4efeeabd038b2ff75929eed2df9c7cdf4b95947d` (PR #20 included).
 
 ## Product and ownership
 
-The current product decision supersedes the companion-only packaging restriction.
-One WiX 5.0.2 Burn bundle, **HidHide (mikeev261 fork)**, publisher **mikeev261**,
-will own the visible Installed Apps entry and cache/resume/repair/uninstall UI.
-One private, per-machine x64 MSI will own the enhanced applications, unchanged
-signed driver payload and lifecycle actions. Neither legacy product is part of
-the final chain. The application directory is `%ProgramFiles%\HidHide`; one
-Start-menu shortcut opens `HidHideClient.exe`. `HidHideCLI.exe` keeps its name.
+The current product decision supersedes both the companion-only restriction and
+the custom Burn bootstrapper. One public WiX 5.0.2 per-machine x64 MSI,
+**HidHide Profiles**, publisher **HidHide Profiles**, owns the visible Installed
+Apps entry, standard Windows Installer UI, applications, unchanged signed driver
+payload and lifecycle actions. Neither legacy product is part of the chain; a
+recognized legacy installation is blocked for normal removal instead of being
+silently migrated. The application directory is `%ProgramFiles%\HidHide`; one
+Start-menu shortcut opens `HidHideClient.exe`. This ordinary-user native coordinator
+launches the independent `Editor/HidHideProfiles.exe` Electron/React editor. The
+editor fully exits when closed; native profile monitoring continues. The existing
+repository, enforcement and recovery services remain authoritative. An authenticated
+same-user JSON bridge uses version/hash checks for mutations. Maintenance rejects
+handoff while an editor process is open. `HidHideCLI.exe` keeps its name.
 
 New randomly generated stable upgrade identities (do not regenerate):
 
 | Family | Upgrade identity |
 |---|---|
-| Unified Burn bundle | `C62D8280-B0B1-42FD-8969-084CC64F9D5B` |
-| Unified private MSI | `A7F7B763-29B4-47FB-9B00-DB18AFA5EB32` |
+| Retired unified Burn bundle (historical detection only) | `C62D8280-B0B1-42FD-8969-084CC64F9D5B` |
+| Unified public MSI | `A7F7B763-29B4-47FB-9B00-DB18AFA5EB32` |
 | Legacy upstream MSI | `8822CC70-E2A5-4CB7-8F14-E27101150A1D` |
 | Legacy companion MSI | `7078E839-3A07-4FA9-BC3A-7677356C88CF` |
 
@@ -87,10 +93,8 @@ Never use Win32_Product, display-name matching or deleting ARP entries.
 
 | Starting state | Operation | Failure/recovery outcome |
 |---|---|---|
-| No product, no HidHide resources | Cache and verify, journal, install private MSI, verify | Roll back newly owned resources; retain journal if cleanup fails; retry setup |
-| Recognized upstream only | Backup confirmed baseline; cache recovery; remove legacy outside MSI; reboot if required; install unified | Before removal: cancel unchanged. After removal: retain backup/cache and offer resume or explicit legacy recovery |
-| Recognized companion only | Quiesce its coordinator; preserve HKCU and recovery records; remove companion; fresh driver install | Keep settings/source backup; resume from observed MSI state; no invented driver baseline if absent |
-| Upstream + companion, including 99 | Quiesce companion first, then backup baseline; remove companion and upstream ownership before installing replacement | Re-detect each ProductCode after interruption; never run upstream uninstall after replacement |
+| No product, no HidHide resources | Verify fixed installed payload, journal, install signed driver, suspend at MSI reboot boundary, verify and commit after reboot | Roll back newly owned resources; retain protected evidence if cleanup is incomplete |
+| Any recognized legacy product | Stop before mutation and instruct normal legacy uninstall | Preserve every product, profile and driver resource unchanged |
 | Earlier unified version | Reject downgrade; transactional early old-MSI removal with upgrade-specific driver retention; install new apps | Restore old app package on MSI failure; keep same verified driver; retain maintenance lock until recovery |
 | Same unified version | Repair missing/damaged owned resources, avoid healthy-driver reinstall | Report required failure; preserve settings and journal; retry repair |
 | Journal or pending reboot | Validate journal schema/ACL/identity, re-detect actual state, resume only verified next step | Unknown/mismatched state stops with journal retained; no blind replay of completed irreversible steps |
@@ -99,11 +103,19 @@ Never use Win32_Product, display-name matching or deleting ARP entries.
 
 ## Transaction, reboot and recovery boundaries
 
-The Burn controller performs legacy Windows Installer removal only before the
-unified MSI transaction. No nested msiexec custom action is permitted. Cache and
-verify the replacement and complete recovery sources before removing anything.
-The cached Windows Installer metadata alone is not proof that external payloads
-needed for legacy recovery are available.
+The public MSI never performs nested Windows Installer operations or removes
+legacy products. Its immediate impersonated action asks the installed CLI to
+restore the initiating user's confirmed baseline and hand off configuration
+ownership. An immediate action can receive an elevated consent token during normal
+Settings removal. The launcher binds Windows Installer's UserSID to its effective
+identity; when elevated, it authenticates CLIENTPROCESSID's token as the same SID,
+interactive session and ordinary privilege level. It creates a suspended helper
+with that token's environment, verifies its token before resuming, and restores
+MSI impersonation afterward. Different-user administrator credentials fail with
+a diagnostic rather than selecting a different user's profile context.
+Deferred non-impersonating actions accept only a generated transaction
+ID, initiating SID, fixed operation and authenticated helper PID; fixed Program
+Files and ProgramData locations are independently derived and verified.
 
 Journal schema 1 lives under a fixed `%ProgramData%\mikeev261\HidHide\Maintenance`
 directory with SYSTEM/Administrators write access only. Reject reparse points,
@@ -113,14 +125,27 @@ versions, manifest digest, baseline backup identifier, intended operation, each
 completed step and reboot state. Paths are fixed/derived from validated IDs;
 no elevated arbitrary command/path fields are accepted.
 
+The historical `mikeev261` maintenance path is an internal persisted namespace.
+It remains fixed so in-progress upgrades and recovery journals stay discoverable;
+it is not the displayed product or publisher name.
+
 Record intent before each irreversible operation and verify observed state after
-it. An operation returning 3010 means reboot required, not operational success.
-Do not force reboot. Resume must verify a boot change and re-detect device/service
-state before advancing. Burn caching/resume supports the package chain; it does
-not roll back custom legacy removals. Cancellation after removal leaves an explicit
-recoverable incomplete migration, not a success message or fabricated rollback.
-Journal completion requires final MSI registration, driver/control-interface,
-filters and restored settings verification. Clear temporary hooks only then.
+it. Fresh install, repair and uninstall use Windows Installer's `ForceReboot`
+suspension before `InstallFinalize`. The public package requires interactive MSI
+UI so Windows never restarts without a standard prompt. After the user restarts, Windows Installer resumes after that boundary,
+the driver worker verifies the new boot and state, and only then may the MSI
+commit. Journal completion requires final driver/control-interface, filters and
+restored settings verification. Clear temporary hooks only then.
+
+Uninstall is split before CostFinalize: the first request records uninstall intent
+but clears REMOVE so MSI retains application files, product registration and its
+cached package through ForceReboot. A full REMOVE=ALL would queue ProductUnregister
+at InstallInitialize and invalidate its own reboot continuation. On continuation,
+the protected uninstall marker requests REMOVE=ALL; the deferred action still
+validates journal ownership, operation and boot before finishing. An MSI retry
+must not roll back a native transaction started in an earlier attempt. The reboot
+condition excludes old-product upgrade removal, recovery and AFTERREBOOT.
+Maintenance exceptions produce both a standard MSI error message and log entry.
 
 Driver setup uses bounded, logged Windows driver APIs or a pinned helper after
 its source/exit behavior is verified. Enumerate matching root nodes before create;
@@ -133,11 +158,13 @@ device, package, service, filters and control interface are healthy.
 
 ## Settings and coordinator maintenance
 
-Keep existing HKCU configuration locations. Preserve profile definitions, pause
-preference, baseline, whitelist/inverse mode and recoverable journals. An active
-profile's effective blacklist is not baseline. Retain each user's source settings;
-do not load arbitrary other-user hives or treat elevated administrator HKCU as the
-initiating user's data.
+For a fresh profiles-first install, the initiating ordinary user's versioned JSON
+repository under `%LOCALAPPDATA%\HidHide Profiles\Profiles` is authoritative for
+profiles, selected Global, mode, pause, startup preference, and global Allowed apps.
+Do not migrate or depend on `ConfigurationV1`. HKCU retains only driver-state crash
+recovery evidence; an active profile's effective blacklist is not baseline. Do not
+load arbitrary other-user hives, treat elevated administrator HKCU as the initiating
+user's data, or access LocalAppData profile JSON from protected setup actions.
 
 `Shared/ConfigurationChannel.h` authenticates both pipe peers by equal user SID.
 The pipe is `HidHide.AppProfiles.Configuration.v1`; the global ownership mutex is
@@ -153,13 +180,19 @@ hold exclusion during mutations; a user-writable marker cannot authorize them.
 Update only owned startup entries in the initiating user's context after the new
 path is valid; preserve startup preference. Other users repair their own startup
 path at ordinary-user launch. Never launch a resident elevated or SYSTEM GUI.
+For uninstall, release the ordinary-user helper only after the protected native
+checkpoint is recorded. It removes only exact current/legacy owned Run commands
+after confirming the matching uninstall/restart marker, without reading profile
+JSON or changing the saved startup preference. Failure release alone is not
+authorization to remove startup commands.
 
 ## Gates and scope
 
-Phase 1 design state table exists. Runtime safeguards above remain implementation
-requirements, not verified behavior. WiX 5 Burn bootstrapper compatibility must be
-tested before choosing its BA implementation. Native dependency inspection must
-also establish offline MFC/VC runtime deployment.
+Runtime safeguards above remain implementation requirements, not verified
+behavior. The release gate inspects standard MSI dialog tables, public ARP
+visibility, custom-action privilege/sequencing and the reboot continuation around
+the protected driver actions. Native dependency inspection must also establish
+offline MFC/VC runtime deployment.
 
 The user subsequently authorized testing on this Windows 11 x64 host and explicitly
 authorized agent-initiated restarts after configuring Codex auto-start. Capture

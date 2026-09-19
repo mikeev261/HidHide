@@ -1,4 +1,7 @@
-# Unified upgrade protocol
+# Historical Burn upgrade protocol
+
+This protocol documents the retired bundle path. Current upgrades are standard
+MSI major upgrades under the public-MSI contract.
 
 Implemented protocol: `HidHide.Upgrade.v1`, first compatible version 2.1.0.
 Native two-version upgrade and rollback testing remains required before release.

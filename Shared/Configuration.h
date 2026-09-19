@@ -16,6 +16,23 @@ namespace HidHide
     using FullImageNames = std::set<FullImageName>;
     using AppProfiles = std::map<FullImageName, DeviceInstancePaths>;
 
+    // State owned by the signed driver. Per-user profile definitions deliberately
+    // do not belong here: recovery may restore this state, but must never roll
+    // back a newer profile catalog.
+    struct DriverConfiguration
+    {
+        bool active{};
+        bool inverse{};
+        DeviceInstancePaths blacklist;
+        FullImageNames whitelist;
+        bool operator==(DriverConfiguration const& other) const
+        {
+            return active == other.active && inverse == other.inverse && blacklist == other.blacklist
+                && whitelist == other.whitelist;
+        }
+        bool operator!=(DriverConfiguration const& other) const { return !(*this == other); }
+    };
+
     struct Configuration
     {
         bool active{};
@@ -30,6 +47,19 @@ namespace HidHide
         }
         bool operator!=(Configuration const& other) const { return !(*this == other); }
     };
+
+    inline DriverConfiguration DriverState(Configuration const& configuration)
+    {
+        return { configuration.active, configuration.inverse, configuration.blacklist, configuration.whitelist };
+    }
+
+    inline void SetDriverState(Configuration& configuration, DriverConfiguration const& state)
+    {
+        configuration.active = state.active;
+        configuration.inverse = state.inverse;
+        configuration.blacklist = state.blacklist;
+        configuration.whitelist = state.whitelist;
+    }
 
     inline Configuration EffectiveConfiguration(Configuration baseline, DeviceInstancePaths const& contributions, bool suspended)
     {
@@ -74,6 +104,10 @@ namespace HidHide
                 if (s.profiles.size() > MaxEntries) throw std::runtime_error("Too many profiles");
                 Number(static_cast<std::uint32_t>(s.profiles.size()));
                 for (auto const& [path, devices] : s.profiles) { String(path.native()); Strings(devices); }
+            }
+            void DriverState(DriverConfiguration const& s)
+            {
+                Number(s.active); Number(s.inverse); Strings(s.blacklist); Strings(s.whitelist);
             }
         };
         struct Reader
@@ -135,6 +169,13 @@ namespace HidHide
                     auto path = String(); auto devices = Strings<DeviceInstancePaths>();
                     if (!s.profiles.emplace(path, devices).second) throw std::runtime_error("Duplicate profile");
                 }
+                return s;
+            }
+            DriverConfiguration DriverState()
+            {
+                DriverConfiguration s;
+                s.active = Boolean(); s.inverse = Boolean();
+                s.blacklist = Strings<DeviceInstancePaths>(); s.whitelist = Strings<FullImageNames>();
                 return s;
             }
             void End() const { if (offset != data.size()) throw std::runtime_error("Trailing configuration data"); }

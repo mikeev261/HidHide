@@ -1,5 +1,22 @@
 using HidHide.Installer;
 
+if (args.Length > 0 && args[0] == "--maintenance-user-child")
+{
+    using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+    bool ordinary = MaintenanceUser.TokenNumber(identity.AccessToken, 20) == 0;
+    bool correct = identity.User?.Value == args[1] && System.Diagnostics.Process.GetCurrentProcess().SessionId.ToString() == args[2];
+    bool cleanEnvironment = Environment.GetEnvironmentVariable("HIDHIDE_TEST_PARENT_ONLY") == null;
+    File.WriteAllText(args[3], $"{ordinary}|{correct}|{cleanEnvironment}|{Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)}");
+    Environment.Exit(ordinary && correct && cleanEnvironment ? 0 : 1);
+    return;
+}
+
+if (args.Length > 0 && args[0] == "--maintenance-token-only")
+{
+    MaintenanceTokenChecks.Run(args.Length > 1 ? int.Parse(args[1]) : 0);
+    return;
+}
+
 var checks = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); checks++; }
 foreach (var text in new[] { "2.0.0.0", "0.0.0.0", "255.255.65535.0" })
@@ -11,6 +28,7 @@ foreach (var text in new[] { "", "1", "1.2.3", "1.2.3.1", "256.0.0.0", "1.256.0.
     Check(rejected, "Invalid version accepted: " + text);
 }
 var target = ProductContract.ParseVersion("2.0.0.0");
+Check(ProductContract.Name == "HidHide Profiles" && ProductContract.Publisher == "HidHide Profiles", "Owned product branding");
 Check(ProductContract.UnifiedProductCode(new Version(2, 1, 0)) == ProductContract.UnifiedProductCode(new Version(2, 1, 0, 0)), "same MSI version has deterministic ProductCode");
 Check(ProductContract.UnifiedProductCode(new Version(2, 1, 0)) != ProductContract.UnifiedProductCode(new Version(2, 2, 0)), "major upgrade has new ProductCode");
 Check(ProductContract.Select(ProductContract.MsiUpgradeCode, Guid.NewGuid(), target, target) == ProductContract.Operation.Repair, "Repair");
@@ -23,6 +41,21 @@ Check(ProductContract.Select(ProductContract.CompanionUpgradeCode, new Guid("B7E
 Check(ProductContract.Select(ProductContract.CompanionUpgradeCode, Guid.NewGuid(), new Version(99,0,0,0), target) == ProductContract.Operation.RejectUnknown, "Unknown legacy identity");
 Check(ProductContract.Select(ProductContract.UpstreamUpgradeCode, ProductContract.UpstreamProductCode, new Version(1,5,230), target) == ProductContract.Operation.MigrateUpstream, "Upstream migration");
 Check(ProductContract.Select(ProductContract.UpstreamUpgradeCode, ProductContract.UpstreamProductCode, new Version(1,6,0), target) == ProductContract.Operation.RejectUnknown, "Unknown upstream version");
+var retiredPrivate215 = new Guid("6D41E09C-0D7C-DE9A-B76B-B80CD09A1AD9");
+Check(ProductContract.UnifiedProductCode(new Version(2,1,5,0)) == retiredPrivate215, "Retired 2.1.5 private MSI identity remains deterministic");
+Check(ProductContract.Select(ProductContract.MsiUpgradeCode, retiredPrivate215, new Version(2,1,5,0), new Version(2,1,10,0)) == ProductContract.Operation.Upgrade, "Retired 2.1.5 private MSI is an upgrade, not a fresh install");
+Check(!DirectMsiPolicy.NeedsResidentHelper("install", false), "Fresh install has no resident helper dependency");
+Check(!DirectMsiPolicy.NeedsResidentHelper("upgrade", false), "Upgrade cannot depend on an older CLI protocol");
+Check(DirectMsiPolicy.NeedsResidentHelper("repair", false), "Repair coordinates through the current installed CLI");
+Check(DirectMsiPolicy.NeedsResidentHelper("uninstall", false), "Uninstall coordinates through the current installed CLI");
+Check(!DirectMsiPolicy.NeedsResidentHelper("repair", true), "Protected recovery reuses its durable barrier");
+Check(DirectMsiPolicy.RemovalPlan(false, false) == (false, false), "Install and repair keep their requested operation");
+Check(DirectMsiPolicy.RemovalPlan(true, false) == (true, false), "First uninstall retains MSI registration and app files across reboot");
+Check(DirectMsiPolicy.RemovalPlan(false, true) == (true, true), "RunOnce continuation uses the protected uninstall marker even without REMOVE");
+Check(DirectMsiPolicy.RemovalPlan(true, true) == (true, true), "Explicit uninstall retry finishes the pending removal");
+bool unknownMsiOperationRejected = false;
+try { DirectMsiPolicy.NeedsResidentHelper("other", false); } catch (ArgumentException) { unknownMsiOperationRejected = true; }
+Check(unknownMsiOperationRejected, "Unknown MSI helper policy operation is rejected");
 Check(DriverFilters.Change(new[] { "VendorA", "VendorB" }, true).SequenceEqual(new[] { "VendorA", "VendorB", "HidHide" }), "Attach preserves ordering");
 Check(DriverFilters.Change(new[] { "VendorA", "hidhide", "VendorB" }, true).SequenceEqual(new[] { "VendorA", "hidhide", "VendorB" }), "Attach idempotence");
 Check(DriverFilters.Change(new[] { "VendorA", "HidHide", "VendorB", "HIDHIDE" }, false).SequenceEqual(new[] { "VendorA", "VendorB" }), "Detach own entries only");
@@ -67,3 +100,4 @@ foreach (var edit in new (int Offset, ushort Value)[] { (0x80 + 6, 0), (0x80 + 6
 }
 foreach (string executable in args) { ExecutableArchitecture.Require(executable, false); Check(true, "actual staged x64 executable accepted"); }
 Console.WriteLine($"{checks} installer contract checks passed.");
+MaintenanceTokenChecks.Run();

@@ -1,0 +1,161 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace HidHide.Installer;
+
+// MSI immediate actions may impersonate an elevated consent token even when
+// launched normally from Settings. Select the ordinary MSI client's token and
+// authenticate its SID/session; never guess from Explorer or inherit SYSTEM.
+internal sealed class MaintenanceUser : IDisposable
+{
+    readonly SafeAccessTokenHandle token;
+    public string Sid { get; }
+    public int SessionId { get; }
+
+    public MaintenanceUser(string initiatingSid, int clientProcessId = 0)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        Sid = identity.User?.Value ?? throw new UnauthorizedAccessException("Cannot identify the setup user.");
+        if (Sid != initiatingSid || identity.IsSystem)
+            throw new UnauthorizedAccessException("Setup must be started by the profile owner. Administrator credentials for a different Windows user cannot prepare this user's configuration.");
+        var source = identity.AccessToken;
+        SafeAccessTokenHandle? clientToken = null;
+        try
+        {
+            if (TokenNumber(source, 20) != 0) // TokenElevation
+            {
+                if (clientProcessId <= 0) throw new UnauthorizedAccessException("Start setup normally from Windows Settings or Explorer so it can preserve the initiating user's configuration.");
+                // The PID selects a candidate, never authorizes it. Validate
+                // against the MSI impersonation identity and interactive session.
+                // Unlike TokenLinkedToken this is a usable primary token even
+                // when Windows exposes the linked token at identification level.
+                using var client = OpenProcess(0x1000, false, clientProcessId);
+                if (client.IsInvalid || !OpenProcessToken(client.DangerousGetHandle(), 0xA, out clientToken))
+                    throw Error("Read initiating MSI client token");
+                Validate(clientToken, Sid, TokenNumber(source, 12));
+                source = clientToken;
+            }
+            if (!DuplicateTokenEx(source, 0x02000000, IntPtr.Zero, 2, 1, out token)) throw Error("Duplicate setup user token");
+        }
+        finally { clientToken?.Dispose(); }
+        try
+        {
+            SessionId = TokenNumber(token, 12);
+            Validate(token, Sid, SessionId);
+        }
+        catch { token.Dispose(); throw; }
+    }
+
+    public Process StartMaintenance(Guid id, bool uninstall)
+    {
+        if (id == Guid.Empty) throw new ArgumentException("Missing maintenance transaction.");
+        string cli = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "HidHide", "HidHideCLI.exe");
+        if (!File.Exists(cli)) throw new FileNotFoundException("The installed maintenance helper is missing.", cli);
+        return Start(cli, (uninstall ? "--maintenance-msi-uninstall " : "--maintenance-msi ") + id.ToString("D"));
+    }
+
+    // Internal seam also used by the isolated token probe. Production supplies
+    // only the fixed installed CLI and a generated transaction GUID above.
+    internal Process Start(string executable, string arguments)
+    {
+        IntPtr environment = IntPtr.Zero;
+        SafeAccessTokenHandle? previous = null;
+        ProcessInfo child = default;
+        bool resumed = false;
+        try
+        {
+            if (!CreateEnvironmentBlock(out environment, token, false)) throw Error("Create setup user environment");
+            bool impersonating = OpenThreadToken(GetCurrentThread(), 0xC, true, out var saved);
+            if (!impersonating && Marshal.GetLastWin32Error() != 1008) { saved.Dispose(); throw Error("Inspect setup impersonation"); }
+            if (impersonating) previous = saved; else saved.Dispose();
+            if (!RevertToSelf()) throw Error("Enter MSI server process context");
+            try
+            {
+                var startup = new StartupInfo { Size = Marshal.SizeOf(typeof(StartupInfo)), Desktop = @"winsta0\default" };
+                const uint flags = 0x08000404; // NO_WINDOW | UNICODE_ENVIRONMENT | SUSPENDED
+                var command = new StringBuilder("\"" + executable + "\" " + arguments);
+                if (!CreateProcessAsUserW(token, executable, command, IntPtr.Zero, IntPtr.Zero, false, flags,
+                    environment, Path.GetDirectoryName(executable), ref startup, out child))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    using var processIdentity = WindowsIdentity.GetCurrent();
+                    // Interactive elevated hosts lack service privileges. This
+                    // API is safe only in the target session (it ignores the
+                    // token's session), with the explicitly selected user token.
+                    if (error != 1314 || Process.GetCurrentProcess().SessionId != SessionId)
+                        throw new Win32Exception(error, "Start ordinary-user configuration maintenance");
+                    command = new StringBuilder("\"" + executable + "\" " + arguments);
+                    bool started = TokenNumber(processIdentity.AccessToken, 20) != 0
+                        ? CreateProcessWithTokenW(token, 0, executable, command, flags, environment,
+                            Path.GetDirectoryName(executable), ref startup, out child)
+                        : processIdentity.User?.Value == Sid && CreateProcessW(executable, command, IntPtr.Zero,
+                            IntPtr.Zero, false, flags, environment, Path.GetDirectoryName(executable), ref startup, out child);
+                    if (!started) throw Error("Start ordinary-user configuration maintenance");
+                }
+                if (!OpenProcessToken(child.Process, 8, out var childToken)) throw Error("Verify maintenance process token");
+                using (childToken) Validate(childToken, Sid, SessionId);
+                var result = Process.GetProcessById((int)child.ProcessId);
+                _ = result.Handle; // Retain exit status even if the helper exits immediately.
+                if (ResumeThread(child.Thread) == uint.MaxValue) { result.Dispose(); throw Error("Start maintenance thread"); }
+                resumed = true;
+                return result;
+            }
+            finally
+            {
+                if (previous != null && !SetThreadToken(IntPtr.Zero, previous))
+                    throw Error("Restore MSI action impersonation");
+            }
+        }
+        finally
+        {
+            // Only terminate a child that never ran; never kill profile recovery.
+            if (child.Process != IntPtr.Zero) { if (!resumed) TerminateProcess(child.Process, 1); CloseHandle(child.Process); }
+            if (child.Thread != IntPtr.Zero) CloseHandle(child.Thread);
+            previous?.Dispose();
+            if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
+        }
+    }
+
+    internal static void Validate(SafeAccessTokenHandle value, string sid, int sessionId)
+    {
+        using var identity = new WindowsIdentity(value.DangerousGetHandle());
+        if (identity.User?.Value != sid || identity.IsSystem || TokenNumber(value, 20) != 0 ||
+            sessionId <= 0 || TokenNumber(value, 12) != sessionId)
+            throw new UnauthorizedAccessException("Configuration maintenance must run as the same ordinary Windows user in their interactive session.");
+    }
+    internal static int TokenNumber(SafeAccessTokenHandle value, int kind)
+    {
+        if (!GetTokenInformation(value, kind, out int result, sizeof(int), out _)) throw Error("Inspect setup user token");
+        return result;
+    }
+    static Win32Exception Error(string message) => new(Marshal.GetLastWin32Error(), message);
+    public void Dispose() => token.Dispose();
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo
+    {
+        public int Size; public string? Reserved; public string? Desktop; public string? Title;
+        public uint X, Y, Width, Height, XChars, YChars, Fill, Flags;
+        public ushort Show, ReservedBytes; public IntPtr ReservedData, Input, Output, Error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr Process, Thread; public uint ProcessId, ThreadId; }
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(SafeAccessTokenHandle token, int kind, out int value, int size, out int needed);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(SafeAccessTokenHandle token, uint access, IntPtr attributes, int level, int type, out SafeAccessTokenHandle result);
+    [DllImport("advapi32.dll", SetLastError = true)] internal static extern bool OpenProcessToken(IntPtr process, uint access, out SafeAccessTokenHandle token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenThreadToken(IntPtr thread, uint access, bool self, out SafeAccessTokenHandle token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool RevertToSelf();
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetThreadToken(IntPtr thread, SafeAccessTokenHandle token);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+    [DllImport("userenv.dll", SetLastError = true)] static extern bool CreateEnvironmentBlock(out IntPtr environment, SafeAccessTokenHandle token, bool inherit);
+    [DllImport("userenv.dll")] static extern bool DestroyEnvironmentBlock(IntPtr environment);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessAsUserW(SafeAccessTokenHandle token, string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string? directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessWithTokenW(SafeAccessTokenHandle token, uint logon, string app, StringBuilder command, uint flags, IntPtr environment, string? directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessW(string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string? directory, ref StartupInfo startup, out ProcessInfo process);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+}

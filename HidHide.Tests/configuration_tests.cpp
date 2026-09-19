@@ -95,6 +95,7 @@ TEST(ConfigurationChannel, AuthenticatedLocalRoundTripAndReconnect)
         server.Pump(handler);
         std::vector<std::uint8_t> request{1, 2, 3, 4};
         auto client = std::async(std::launch::async, [&] { return Channel::Exchange(request, name.c_str()); });
+        EXPECT_EQ(static_cast<DWORD>(WAIT_OBJECT_0), ::WaitForSingleObject(server.WakeHandle(), 1000));
         auto deadline = ::GetTickCount64() + 6000;
         while (client.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready && ::GetTickCount64() < deadline)
         {
@@ -102,5 +103,51 @@ TEST(ConfigurationChannel, AuthenticatedLocalRoundTripAndReconnect)
         }
         EXPECT_EQ(request, client.get());
         server.Pump(handler); // observe the disconnected client before reconnecting
+    }
+}
+
+TEST(ConfigurationChannel, StalledClientExpiresAndNextClientCanConnect)
+{
+    auto name = L"\\\\.\\pipe\\HidHide.Test.Stalled." + std::to_wstring(::GetCurrentProcessId());
+    Channel::Server server(name.c_str());
+    auto stalled = Channel::Own(::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
+    auto handler = [](auto const& bytes) { return bytes; };
+    ASSERT_EQ(static_cast<DWORD>(WAIT_OBJECT_0), ::WaitForSingleObject(server.WakeHandle(), 1000));
+    server.Pump(handler); // The client connects but sends no request.
+    ASSERT_TRUE(server.Connected());
+    ASSERT_EQ(static_cast<DWORD>(WAIT_TIMEOUT), ::WaitForSingleObject(server.WakeHandle(), server.WaitTimeoutMs()));
+    server.Pump(handler);
+    EXPECT_FALSE(server.Connected());
+    stalled.reset();
+    std::vector<std::uint8_t> request{5, 6, 7};
+    auto next = std::async(std::launch::async, [&] { return Channel::Exchange(request, name.c_str()); });
+    auto deadline = ::GetTickCount64() + 6000;
+    while (next.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready && ::GetTickCount64() < deadline)
+    {
+        (void)::WaitForSingleObject(server.WakeHandle(), 100);
+        server.Pump(handler);
+    }
+    EXPECT_EQ(request, next.get());
+}
+
+TEST(ConfigurationChannel, DestructionDrainsPendingConnectReadAndWrite)
+{
+    for (unsigned iteration{}; iteration < 12; ++iteration)
+    {
+        auto name = L"\\\\.\\pipe\\HidHide.Test.Teardown." + std::to_wstring(::GetCurrentProcessId()) + L"." + std::to_wstring(iteration);
+        auto server = std::make_unique<Channel::Server>(name.c_str());
+        if (iteration % 3 == 0) { server.reset(); continue; } // Pending connect.
+        auto client = Channel::Own(::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
+        ASSERT_EQ(static_cast<DWORD>(WAIT_OBJECT_0), ::WaitForSingleObject(server->WakeHandle(), 1000));
+        server->Pump([](auto const& bytes) { return bytes; });
+        if (iteration % 3 == 1) { server.reset(); continue; } // Pending read.
+        std::uint8_t byte{42}; DWORD written{};
+        ASSERT_TRUE(::WriteFile(client.get(), &byte, 1, &written, nullptr));
+        ASSERT_EQ(1u, written);
+        ASSERT_EQ(static_cast<DWORD>(WAIT_OBJECT_0), ::WaitForSingleObject(server->WakeHandle(), 1000));
+        server->Pump([](auto const&) { return std::vector<std::uint8_t>(Protocol::MaxBytes, 42); });
+        server.reset(); // A full response may still be pending when the owner closes.
     }
 }

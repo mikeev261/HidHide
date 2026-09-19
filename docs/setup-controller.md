@@ -1,4 +1,7 @@
-# Unified Burn controller
+# Historical unified Burn controller
+
+This controller is retained as recovery-design reference and is not shipped by
+the current public MSI.
 
 The build now produces a WiX 5.0.2 Burn EXE with one private MSI. This is an
 unsigned development artifact, not a lifecycle-validated release. Kernel source,

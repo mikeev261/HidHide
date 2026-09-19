@@ -1,10 +1,99 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "FilterDriverProxy.h"
+#include "StartupEntry.h"
 #include <iostream>
 
 namespace HidHide
 {
+    inline void RemoveOwnedStartupValues(HKEY run, std::wstring const& currentCommand, std::wstring const& legacyCommand)
+    {
+        for (auto name : { L"HidHide Profiles", L"HidHide App Profiles" })
+        {
+            wchar_t value[32768]{}; DWORD bytes = sizeof(value);
+            if (::RegGetValueW(run, nullptr, name, RRF_RT_REG_SZ, nullptr, value, &bytes) == ERROR_SUCCESS
+                && OwnedStartupCommand(std::wstring(value), currentCommand, legacyCommand))
+            {
+                auto removed = ::RegDeleteValueW(run, name);
+                if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND)
+                    throw std::runtime_error("Could not remove the owned startup command");
+            }
+        }
+    }
+
+    inline void RemoveOwnedStartupAfterUninstall(std::wstring const& transaction)
+    {
+        // Release is also signalled on failure. Clean startup only after the
+        // protected worker confirms this uninstall's successful restart checkpoint.
+        HKEY marker{};
+        if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\mikeev261\\HidHide\\Maintenance", 0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY, &marker) != ERROR_SUCCESS) return;
+        auto text = [marker](PCWSTR name)
+        {
+            wchar_t value[64]{}; DWORD size = sizeof(value);
+            return ::RegGetValueW(marker, nullptr, name, RRF_RT_REG_SZ, nullptr, value, &size) == ERROR_SUCCESS ? std::wstring(value) : std::wstring();
+        };
+        DWORD restart{}, size = sizeof(restart);
+        bool confirmed = text(L"Transaction") == transaction && text(L"Operation") == L"uninstall"
+            && ::RegGetValueW(marker, nullptr, L"RestartRequired", RRF_RT_REG_DWORD, nullptr, &restart, &size) == ERROR_SUCCESS && restart == 1;
+        ::RegCloseKey(marker);
+        if (!confirmed) return;
+        wchar_t image[32768]{};
+        auto length = ::GetModuleFileNameW(nullptr, image, static_cast<DWORD>(std::size(image)));
+        if (!length || length >= std::size(image)) throw std::runtime_error("Cannot identify the installed startup command");
+        auto directory = std::filesystem::path(image).parent_path();
+        auto currentCommand = L"\"" + (directory / L"HidHideClient.exe").wstring() + L"\" --background";
+        auto legacyCommand = L"\"" + (directory.parent_path() / L"HidHide App Profiles" / L"HidHideClient.exe").wstring() + L"\" --background";
+        HKEY run{};
+        auto opened = ::RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &run);
+        if (opened == ERROR_FILE_NOT_FOUND) return;
+        if (opened != ERROR_SUCCESS) throw std::runtime_error("Cannot remove the owned startup command");
+        try { RemoveOwnedStartupValues(run, currentCommand, legacyCommand); }
+        catch (...) { ::RegCloseKey(run); throw; }
+        ::RegCloseKey(run);
+    }
+    inline bool ValidMsiTransactionId(std::wstring const& value)
+    {
+        if (value.size() != 36) return false;
+        for (size_t index = 0; index < value.size(); ++index)
+        {
+            if (index == 8 || index == 13 || index == 18 || index == 23)
+            {
+                if (value[index] != L'-') return false;
+            }
+            else if (!iswxdigit(value[index])) return false;
+        }
+        return true;
+    }
+
+    inline std::wstring MsiEventName(PCWSTR role, std::wstring const& transaction)
+    {
+        if (!ValidMsiTransactionId(transaction)) throw std::runtime_error("Invalid Windows Installer transaction identity");
+        return std::wstring(L"Global\\HidHide.Profiles.Msi.") + role + L"." + transaction;
+    }
+
+    // Windows Installer runs this helper as the initiating ordinary user before
+    // its elevated execute sequence. It restores the confirmed baseline, hands
+    // configuration ownership to the protected MSI action, and retains the
+    // barrier until that action has created the administrator-owned durable
+    // marker. No profile data or caller-selected path crosses the boundary.
+    inline void RunMsiMaintenanceSession(std::wstring const& transaction, bool uninstall = false)
+    {
+        Maintenance::RequireOrdinaryUser();
+        auto session = FilterDriverProxy::BeginMaintenance();
+        Channel::Security security(L"D:P(A;;0x00100002;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)");
+        auto ready = Channel::Own(::CreateEventExW(&security.attributes, MsiEventName(L"Ready", transaction).c_str(),
+            CREATE_EVENT_MANUAL_RESET, SYNCHRONIZE | EVENT_MODIFY_STATE));
+        auto release = Channel::Own(::CreateEventExW(&security.attributes, MsiEventName(L"Release", transaction).c_str(),
+            CREATE_EVENT_MANUAL_RESET, SYNCHRONIZE | EVENT_MODIFY_STATE));
+        if (!ready || !release) throw std::runtime_error("Cannot create Windows Installer maintenance events");
+        session->Handoff();
+        if (!::SetEvent(ready.get())) throw std::runtime_error("Cannot signal Windows Installer maintenance readiness");
+        auto const result = ::WaitForSingleObject(release.get(), 5 * 60 * 1000);
+        if (result != WAIT_OBJECT_0) throw std::runtime_error("Windows Installer maintenance preparation timed out");
+        if (uninstall) RemoveOwnedStartupAfterUninstall(transaction);
+    }
+
     // An internal setup interface, invoked before elevation by the initiating
     // user's controller. No executable/path/SID arguments or commands are accepted.
     inline void RunMaintenanceSession()

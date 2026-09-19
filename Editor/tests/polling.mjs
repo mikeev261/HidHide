@@ -1,0 +1,42 @@
+import {_electron as electron,expect} from '@playwright/test';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const root=path.resolve(import.meta.dirname,'..'),output=path.resolve(root,'../artifacts/performance-ui-validation');
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const app=await electron.launch({args:[root,'--fixture'],env});
+try{
+ const page=await app.firstWindow(),control=options=>app.evaluate((_electron,value)=>globalThis.__fixtureControl(value),options);
+ await expect(page.getByText('Profile engine running',{exact:true})).toBeVisible();
+ const window=await app.browserWindow(page);await window.evaluate(window=>window.hide());
+ await page.waitForTimeout(300);
+ await app.evaluate(({ipcMain,BrowserWindow})=>{
+  globalThis.__visibilityQueried=false;ipcMain.removeHandler('editor:visibility');
+  ipcMain.handle('editor:visibility',()=>{const visible=BrowserWindow.getAllWindows()[0].isVisible();globalThis.__visibilityQueried=true;return new Promise(resolve=>setTimeout(()=>resolve(visible),1000));});
+ });
+ const hiddenBefore=(await control({})).fixtureDiagnostics.snapshotRequests;
+ await page.reload();await expect.poll(()=>app.evaluate(()=>globalThis.__visibilityQueried)).toBe(true);
+ assert.equal((await control({})).fixtureDiagnostics.snapshotRequests,hiddenBefore,'Initial hidden visibility query must not start a snapshot');
+ await window.evaluate(window=>window.show());await page.waitForTimeout(1300);
+ assert.equal(await page.evaluate(()=>document.documentElement.dataset.editorVisible),'true','A late initial query must not overwrite the show event');
+ await expect(page.getByText('Profile engine running',{exact:true})).toBeVisible();
+ await app.evaluate(({ipcMain,BrowserWindow})=>{ipcMain.removeHandler('editor:visibility');ipcMain.handle('editor:visibility',()=>{const window=BrowserWindow.getAllWindows()[0];return window.isVisible()&&!window.isMinimized();});});
+ await control({snapshotDelay:2300});
+ await page.reload();
+ const start=performance.now();
+ await expect(page.getByText('Profile engine running',{exact:true})).toBeVisible({timeout:7000});
+ const firstSnapshotMs=performance.now()-start;
+ assert(firstSnapshotMs<6000,'Slow snapshots must not starve behind the polling interval');
+ await control({snapshotDelay:0});
+ await window.evaluate(window=>window.hide());
+ await page.waitForTimeout(2500);
+ const before=(await control({})).fixtureDiagnostics;
+ await page.waitForTimeout(2500);
+ const after=(await control({})).fixtureDiagnostics;
+ assert.equal(after.snapshotRequests,before.snapshotRequests,'Hidden editor must not keep polling');
+ await window.evaluate(window=>window.show());
+ await expect.poll(async()=>(await control({})).fixtureDiagnostics.snapshotRequests).toBeGreaterThan(after.snapshotRequests);
+ const result={injectedSnapshotDelayMs:2300,firstSnapshotMs,peakSnapshots:after.peakSnapshots,hiddenRequests:after.snapshotRequests-before.snapshotRequests,visibleResumes:true,initialVisibilityRace:true};
+ assert.equal(result.peakSnapshots,1);
+ await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(output,'polling.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));
+}finally{await app.close().catch(()=>{});}

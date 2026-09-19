@@ -9,7 +9,10 @@ public static class Program
             {
                 var journal = new ProtectedJournal(id);
                 var record = journal.Load();
-                using var lease = new MaintenanceLease(id, args[0] == "--resume");
+                // The public MSI establishes a protected marker before invoking
+                // any worker. Reopen that durable transaction for apply,
+                // rollback and post-reboot continuation alike.
+                using var lease = new MaintenanceLease(id, recovery: true);
                 var backend = new WindowsDriverBackend(Path.Combine(ProtectedJournal.Root, "payload"), lease.AssertHeld);
                 Payload.Verify(Path.Combine(ProtectedJournal.Root, "payload"));
                 // No ordinary-user command can create this protected record or

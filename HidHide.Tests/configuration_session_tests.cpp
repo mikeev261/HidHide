@@ -5,6 +5,9 @@
 #include "../HidHideClient/src/ActiveStateView.h"
 #include "../HidHideClient/src/ManagerActivation.h"
 #include "ConfigurationOwner.h"
+#include "ConfigurationReconciliation.h"
+#include "ProfileRecovery.h"
+#include "StartupEntry.h"
 #include <thread>
 #include <functional>
 #include <vector>
@@ -124,6 +127,152 @@ TEST(ConfigurationSession, LiveManagerSeesCliProfilesAfterCommit)
     cli.ApplyConfigurationChanges();
     EXPECT_EQ(cli.GetAppProfiles(), manager.GetAppProfiles());
     EXPECT_FALSE(b->leased); // Long-lived sessions do not monopolize exclusive device.
+}
+
+TEST(ProfileRecovery, LegacyCatalogCannotReplaceLiveProfileCatalog)
+{
+    Configuration legacyBaseline;
+    legacyBaseline.active = false;
+    legacyBaseline.inverse = true;
+    legacyBaseline.blacklist = { L"baseline-device" };
+    legacyBaseline.whitelist = { L"baseline-app" };
+    legacyBaseline.profiles[L"legacy-game.exe"] = { L"legacy-device" };
+
+    Configuration live = legacyBaseline;
+    live.active = true;
+    live.blacklist.insert(L"temporary-device");
+    live.profiles.clear();
+    live.profiles[L"new-game.exe"] = { L"new-device-a", L"new-device-b" };
+
+    Configuration legacyAfter = legacyBaseline;
+    legacyAfter.active = true;
+    legacyAfter.blacklist.insert(L"temporary-device");
+    Protocol::Writer legacy;
+    legacy.Number(ProfileRecovery::SchemaV1); legacy.String(L"S-1-5-21-test");
+    legacy.State(legacyBaseline); legacy.State(legacyBaseline); legacy.State(legacyAfter);
+    auto const record = ProfileRecovery::Parse(legacy.data, L"S-1-5-21-test");
+    ASSERT_TRUE(ProfileRecovery::MatchesRecordedDriverState(DriverState(live), record.baseline, record.before, record.after));
+    auto const restored = ProfileRecovery::RestoreDriverState(live, record.baseline);
+
+    EXPECT_EQ(DriverState(legacyBaseline), DriverState(restored));
+    EXPECT_EQ(live.profiles, restored.profiles);
+    EXPECT_FALSE(restored.profiles.count(L"legacy-game.exe"));
+}
+
+TEST(ProfileRecovery, V2JournalPayloadHasOnlyDriverState)
+{
+    Configuration configuration;
+    configuration.active = true;
+    configuration.blacklist = { L"device" };
+    configuration.profiles[L"must-not-be-serialized.exe"] = { L"secret-device" };
+
+    auto const bytes = ProfileRecovery::SerializeV2(L"S-1-5-21-test",
+        { DriverState(configuration), DriverState(configuration), DriverState(configuration) });
+    auto const record = ProfileRecovery::Parse(bytes, L"S-1-5-21-test");
+    EXPECT_EQ(DriverState(configuration), record.baseline);
+    EXPECT_EQ(DriverState(configuration), record.before);
+    EXPECT_EQ(DriverState(configuration), record.after);
+
+    Protocol::Reader reader(bytes);
+    EXPECT_EQ(ProfileRecovery::SchemaV2, reader.Number());
+    EXPECT_EQ(L"S-1-5-21-test", reader.String());
+    EXPECT_EQ(DriverState(configuration), reader.DriverState());
+    EXPECT_EQ(DriverState(configuration), reader.DriverState());
+    EXPECT_EQ(DriverState(configuration), reader.DriverState());
+    EXPECT_NO_THROW(reader.End());
+}
+
+TEST(ConfigurationReconciliation, LiveProfileCatalogRefreshPreservesDriverOwnershipState)
+{
+    Configuration baseline;
+    baseline.active = false;
+    baseline.inverse = true;
+    baseline.blacklist = { L"baseline-device" };
+    baseline.whitelist = { L"baseline-app" };
+    baseline.profiles[L"stale-legacy.exe"] = { L"stale-device" };
+
+    Configuration expected = baseline;
+    expected.active = true;
+    expected.blacklist.insert(L"temporary-profile-device");
+
+    AppProfiles const liveCatalog{
+        { L"F1.exe", { L"HID\\VID_046D&PID_C29A&MI_00", L"HID\\VID_046D&PID_C29A&MI_01" } }
+    };
+    auto const baselineDriver = DriverState(baseline);
+    auto const expectedDriver = DriverState(expected);
+
+    ConfigurationReconciliation::ApplyLiveProfileCatalog(baseline, expected, liveCatalog);
+
+    EXPECT_EQ(baselineDriver, DriverState(baseline));
+    EXPECT_EQ(expectedDriver, DriverState(expected));
+    EXPECT_EQ(liveCatalog, baseline.profiles);
+    EXPECT_EQ(liveCatalog, expected.profiles);
+    EXPECT_FALSE(expected.profiles.count(L"stale-legacy.exe"));
+}
+
+TEST(ConfigurationReconciliation, AutomaticStartupTransitionCannotCommitProfileCatalog)
+{
+    Configuration baseline;
+    baseline.active = false;
+    baseline.profiles[L"F1_25.exe"] = { L"HID\\VID_046D&PID_C29A&MI_00", L"HID\\VID_046D&PID_C29A&MI_01" };
+    auto expected = baseline;
+    auto desired = EffectiveConfiguration(baseline, {}, false);
+
+    unsigned commits{};
+    DriverConfiguration committedExpected, committedDesired;
+    ConfigurationReconciliation::CommitAutomaticDriverTransition(expected, desired,
+        [&](DriverConfiguration const& from, DriverConfiguration const& to)
+        {
+            ++commits; committedExpected = from; committedDesired = to;
+        });
+
+    EXPECT_EQ(1u, commits);
+    EXPECT_EQ(DriverState(expected), committedExpected);
+    EXPECT_EQ(DriverState(desired), committedDesired);
+    EXPECT_EQ(baseline.profiles, desired.profiles);
+    EXPECT_EQ(2u, desired.profiles.at(L"F1_25.exe").size());
+}
+
+TEST(ConfigurationReconciliation, ProfileOnlyCommitSkipsDriverCasAndMixedCommitIsRejectedBeforeWrites)
+{
+    Configuration expected;
+    expected.active = false;
+    expected.profiles[L"F1_25.exe"] = { L"old-device" };
+    auto profileOnly = expected;
+    profileOnly.profiles[L"F1_25.exe"] = { L"new-device-a", L"new-device-b" };
+    unsigned profileWrites{}, driverWrites{};
+    ConfigurationReconciliation::CommitExplicitMutation(expected, profileOnly,
+        [&](auto const&, auto const&) { ++profileWrites; },
+        [&](auto const&, auto const&) { ++driverWrites; });
+    EXPECT_EQ(1u, profileWrites);
+    EXPECT_EQ(0u, driverWrites);
+
+    auto mixed = profileOnly;
+    mixed.active = true;
+    EXPECT_THROW(ConfigurationReconciliation::CommitExplicitMutation(expected, mixed,
+        [&](auto const&, auto const&) { ++profileWrites; },
+        [&](auto const&, auto const&) { ++driverWrites; }), std::invalid_argument);
+    EXPECT_EQ(1u, profileWrites);
+    EXPECT_EQ(0u, driverWrites);
+}
+
+TEST(StartupEntry, PreservesForeignCommandsAndMigratesOnlyOwnedValues)
+{
+    std::wstring const current{ L"\"C:\\Program Files\\HidHide\\HidHideClient.exe\" --background" };
+    std::wstring const legacy{ L"\"C:\\Program Files\\HidHide App Profiles\\HidHideClient.exe\" --background" };
+    std::optional<std::wstring> const foreign{ L"C:\\foreign.exe" };
+
+    auto plan = PlanStartupEntry(true, foreign, legacy, current, legacy);
+    EXPECT_FALSE(plan.setCurrent); EXPECT_FALSE(plan.deleteCurrent); EXPECT_FALSE(plan.deleteLegacy);
+
+    plan = PlanStartupEntry(false, foreign, legacy, current, legacy);
+    EXPECT_FALSE(plan.setCurrent); EXPECT_FALSE(plan.deleteCurrent); EXPECT_TRUE(plan.deleteLegacy);
+
+    plan = PlanStartupEntry(true, std::nullopt, legacy, current, legacy);
+    EXPECT_TRUE(plan.setCurrent); EXPECT_FALSE(plan.deleteCurrent); EXPECT_TRUE(plan.deleteLegacy);
+
+    plan = PlanStartupEntry(false, current, foreign, current, legacy);
+    EXPECT_FALSE(plan.setCurrent); EXPECT_TRUE(plan.deleteCurrent); EXPECT_FALSE(plan.deleteLegacy);
 }
 TEST(ConfigurationSession, LiveReadsObserveExternalDriverState)
 {

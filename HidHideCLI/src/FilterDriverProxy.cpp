@@ -9,6 +9,7 @@
 #include "Logging.h"
 #include "ConfigurationChannel.h"
 #include "DriverRegistrySnapshot.h"
+#include "ProfileRecovery.h"
 
 namespace
 {
@@ -101,22 +102,6 @@ namespace
         if (FALSE == ::DeviceIoControl(device, static_cast<DWORD>(IOCTL_SET_WHITELIST), buffer.data(), static_cast<DWORD>(buffer.size() * sizeof(WCHAR)), nullptr, 0, &needed, nullptr)) THROW_WIN32_LAST_ERROR;
     }
 
-    // Set the application profiles
-    void SetAppProfiles(_In_ HidHide::AppProfiles const& appProfiles)
-    {
-        TRACE_ALWAYS(L"");
-        HidHide::Configuration state; state.profiles = appProfiles;
-        HidHide::Protocol::Writer writer; writer.Number(HidHide::Protocol::Version); writer.State(state);
-        HKEY key{};
-        DWORD disposition{};
-        auto status{ ::RegCreateKeyExW(HKEY_CURRENT_USER, APP_PROFILES_KEY, 0, nullptr, REG_OPTION_NON_VOLATILE,
-            KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) };
-        if (ERROR_SUCCESS != status) THROW_WIN32(status);
-        status = ::RegSetValueExW(key, L"ConfigurationV1", 0, REG_BINARY, writer.data.data(), static_cast<DWORD>(writer.data.size()));
-        ::RegCloseKey(key);
-        if (ERROR_SUCCESS != status) THROW_WIN32(status);
-    }
-
     // Read profiles from the per-user store. Scanning the full
     // REG_MULTI_SZ buffer (rather than stopping at the first empty string) also
     // recovers device entries that were placed after the old empty-string sentinel.
@@ -133,6 +118,8 @@ namespace
         {
             try
             {
+                // A present V1 blob owns the catalog. Never fall back to stale
+                // legacy REG_MULTI_SZ values after a valid blob has been saved.
                 if (blobStatus != ERROR_SUCCESS || blobType != REG_BINARY || blobSize > HidHide::Protocol::MaxBytes)
                     throw std::runtime_error("Malformed or oversized profile store");
                 std::vector<std::uint8_t> bytes(blobSize);
@@ -235,12 +222,38 @@ namespace HidHide
             s.profiles = ::GetAppProfiles();
             return s;
         }
+        DriverConfiguration SnapshotDriver(HANDLE device)
+        {
+            return { ::GetActive(device), ::GetInverse(device), ::GetBlacklist(device), ::GetWhitelist(device) };
+        }
+        void ApplyDriverState(HANDLE device, DriverConfiguration const& current, DriverConfiguration const& desired)
+        {
+            // IOCTLs are not atomic. Disable first, enable last; a failed/partial
+            // write does not advance confirmed state and fails the read-back.
+            if (current.active && !desired.active) ::SetActive(device, false);
+            if (current.whitelist != desired.whitelist) ::SetWhitelist(device, desired.whitelist);
+            if (current.blacklist != desired.blacklist) ::SetBlacklist(device, desired.blacklist);
+            if (current.inverse != desired.inverse) ::SetInverse(device, desired.inverse);
+            if (!current.active && desired.active) ::SetActive(device, true);
+        }
         void RequireNoRecovery()
         {
             HKEY key{};
             auto const error = ::RegOpenKeyExW(HKEY_CURRENT_USER,
-                L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileRuntime", 0, KEY_READ, &key);
-            if (error == ERROR_SUCCESS) { ::RegCloseKey(key); throw std::runtime_error("Profile recovery is pending. Open the companion manager before changing settings"); }
+                ProfileRecovery::RuntimeKey, 0, KEY_QUERY_VALUE, &key);
+            if (error == ERROR_SUCCESS)
+            {
+                auto exists = [key](wchar_t const* name)
+                {
+                    DWORD type{}, bytes{};
+                    auto value = ::RegQueryValueExW(key, name, nullptr, &type, nullptr, &bytes);
+                    if (value == ERROR_SUCCESS || value == ERROR_MORE_DATA) return true;
+                    if (value == ERROR_FILE_NOT_FOUND) return false;
+                    throw std::runtime_error("Cannot inspect profile recovery value");
+                };
+                bool pending{}; try { pending = ProfileRecovery::RelevantRecoveryExists(exists); } catch (...) { ::RegCloseKey(key); throw; }
+                ::RegCloseKey(key); if (pending) throw std::runtime_error("Profile recovery is pending. Open HidHide Profiles before changing settings"); return;
+            }
             if (error != ERROR_FILE_NOT_FOUND) throw std::runtime_error("Cannot check profile recovery ownership");
         }
         Configuration Remote(Protocol::Writer request)
@@ -276,25 +289,39 @@ namespace HidHide
         return Snapshot(device.get());
     }
 
-    void FilterDriverProxy::CommitDriverConfiguration(Configuration const& expected, Configuration const& desired)
+    Configuration FilterDriverProxy::ReadDriverOnlyConfiguration()
+    {
+        return ComposeProfilesRuntimeConfiguration([]
+        {
+            auto device = ::Device(StringTable(IDS_CONTROL_DEVICE_NAME)); return SnapshotDriver(device.get());
+        });
+    }
+
+    Configuration FilterDriverProxy::ComposeProfilesRuntimeConfiguration(std::function<DriverConfiguration()> readDriver)
+    {
+        if (!readDriver) throw std::invalid_argument("Profiles runtime driver reader is required");
+        Configuration result; SetDriverState(result, readDriver()); return result;
+    }
+
+    AppProfiles FilterDriverProxy::ReadLegacyProfileCatalogForMaintenance()
+    {
+        return ::GetAppProfiles();
+    }
+
+    void FilterDriverProxy::CommitDriverState(DriverConfiguration const& expected, DriverConfiguration const& desired)
     {
         auto device = ::Device(StringTable(IDS_CONTROL_DEVICE_NAME));
-        auto const current = Snapshot(device.get());
-        if (current != expected) throw ConfigurationConflict("Configuration changed outside this transaction. Refresh and resolve the conflict before retrying");
-        // IOCTLs are not atomic. Disable first, enable last; a failed/partial write
-        // does not advance confirmed state and will fail the next expected-state check.
-        if (current.active && !desired.active) ::SetActive(device.get(), false);
-        if (current.whitelist != desired.whitelist) ::SetWhitelist(device.get(), desired.whitelist);
-        if (current.blacklist != desired.blacklist) ::SetBlacklist(device.get(), desired.blacklist);
-        if (current.inverse != desired.inverse) ::SetInverse(device.get(), desired.inverse);
-        if (current.profiles != desired.profiles) ::SetAppProfiles(desired.profiles);
-        if (!current.active && desired.active) ::SetActive(device.get(), true);
-        if (Snapshot(device.get()) != desired) throw std::runtime_error("Driver did not confirm the requested configuration; refresh before retrying");
+        auto const current = SnapshotDriver(device.get());
+        if (current != expected)
+            throw ConfigurationConflict("Driver configuration changed outside this transaction. Refresh and resolve the conflict before retrying");
+        ApplyDriverState(device.get(), current, desired);
+        if (SnapshotDriver(device.get()) != desired)
+            throw std::runtime_error("Driver did not confirm the requested configuration; refresh before retrying");
     }
 
     _Use_decl_annotations_
-    FilterDriverProxy::FilterDriverProxy(bool writeThrough, bool coordinator)
-        : m_WriteThrough(writeThrough), m_Coordinator(coordinator)
+    FilterDriverProxy::FilterDriverProxy(bool writeThrough, bool coordinator, std::function<Configuration()> coordinatorRead)
+        : m_WriteThrough(writeThrough), m_Coordinator(coordinator), m_Read(std::move(coordinatorRead))
     {
         Refresh();
         // Reading configuration has no side effects. The user's whitelist is
@@ -311,7 +338,7 @@ namespace HidHide
     Configuration FilterDriverProxy::Read()
     {
         if (m_Read) return m_Read();
-        if (m_Coordinator) return ReadDriverConfiguration();
+        if (m_Coordinator) return ReadDriverOnlyConfiguration();
         {
             Maintenance::Admission admission;
             Channel::Lease lease;
@@ -325,8 +352,14 @@ namespace HidHide
 
     void FilterDriverProxy::Commit(Configuration const& desired)
     {
+        if (m_Original.profiles != desired.profiles)
+            throw std::invalid_argument("Legacy profile mutation is unsupported; use the JSON profiles repository");
         if (m_Commit) m_Commit(m_Original, desired, m_DisableRequested);
-        else if (m_Coordinator) { Maintenance::Admission admission; CommitDriverConfiguration(m_Original, desired); }
+        else if (m_Coordinator)
+        {
+            Maintenance::Admission admission;
+            CommitDriverState(DriverState(m_Original), DriverState(desired));
+        }
         else
         {
             bool direct{};
@@ -334,7 +367,11 @@ namespace HidHide
                 Maintenance::Admission admission;
                 Channel::Lease lease;
                 direct = lease.Acquired();
-                if (direct && (desired != m_Original || m_DisableRequested)) { RequireNoRecovery(); CommitDriverConfiguration(m_Original, desired); }
+                if (direct && (desired != m_Original || m_DisableRequested))
+                {
+                    RequireNoRecovery();
+                    CommitDriverState(DriverState(m_Original), DriverState(desired));
+                }
             }
             if (!direct)
             {
@@ -382,7 +419,6 @@ namespace HidHide
     bool FilterDriverProxy::GetInverse() const { return m_Cache.inverse; }
     DeviceInstancePaths FilterDriverProxy::GetBlacklist() const { return m_Cache.blacklist; }
     FullImageNames FilterDriverProxy::GetWhitelist() const { return m_Cache.whitelist; }
-    AppProfiles FilterDriverProxy::GetAppProfiles() const { return m_Cache.profiles; }
     _Use_decl_annotations_
     void FilterDriverProxy::SetActive(bool value) { auto desired = m_Cache; desired.active = value; m_DisableRequested = !value; Change(desired); }
     _Use_decl_annotations_
@@ -392,8 +428,6 @@ namespace HidHide
     _Use_decl_annotations_
     void FilterDriverProxy::SetWhitelist(FullImageNames const& value) { auto desired = m_Cache; desired.whitelist = value; Change(desired); }
     _Use_decl_annotations_
-    void FilterDriverProxy::SetAppProfiles(AppProfiles const& value) { auto desired = m_Cache; desired.profiles = value; Change(desired); }
-    _Use_decl_annotations_
     void FilterDriverProxy::BlacklistAddEntry(DeviceInstancePath const& value) { auto desired = m_Cache; desired.blacklist.insert(value); Change(desired); }
     _Use_decl_annotations_
     void FilterDriverProxy::BlacklistDelEntry(DeviceInstancePath const& value) { auto desired = m_Cache; desired.blacklist.erase(value); Change(desired); }
@@ -401,16 +435,6 @@ namespace HidHide
     void FilterDriverProxy::WhitelistAddEntry(FullImageName const& value) { auto desired = m_Cache; desired.whitelist.insert(value); Change(desired); }
     _Use_decl_annotations_
     void FilterDriverProxy::WhitelistDelEntry(FullImageName const& value) { auto desired = m_Cache; desired.whitelist.erase(value); Change(desired); }
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileAdd(FullImageName const& value) { auto desired = m_Cache; desired.profiles.try_emplace(value); Change(desired); }
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileDelete(FullImageName const& value) { auto desired = m_Cache; desired.profiles.erase(value); Change(desired); }
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileAddEntry(FullImageName const& path, DeviceInstancePath const& device)
-    { auto desired = m_Cache; desired.profiles[path].insert(device); Change(desired); }
-    _Use_decl_annotations_
-    void FilterDriverProxy::AppProfileDelEntry(FullImageName const& path, DeviceInstancePath const& device)
-    { auto desired = m_Cache; auto it = desired.profiles.find(path); if (it != desired.profiles.end()) it->second.erase(device); Change(desired); }
     void FilterDriverProxy::SetBlacklist(DeviceInstancePaths const& expected, DeviceInstancePaths const& value)
     {
         if (m_Cache.blacklist != expected) throw ConfigurationConflict("Blacklist view changed; refresh and retry");
@@ -420,11 +444,6 @@ namespace HidHide
     {
         if (m_Cache.whitelist != expected) throw ConfigurationConflict("Whitelist view changed; refresh and retry");
         SetWhitelist(value);
-    }
-    void FilterDriverProxy::SetAppProfiles(AppProfiles const& expected, AppProfiles const& value)
-    {
-        if (m_Cache.profiles != expected) throw ConfigurationConflict("AppProfiles view changed; refresh and retry");
-        SetAppProfiles(value);
     }
     void FilterDriverProxy::SetActive(bool const& expected, bool const& value)
     {

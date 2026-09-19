@@ -383,3 +383,8 @@ pnputil_out.txt
 staging/
 wix.zip
 wix/
+
+# Disposable Electron editor dependencies and packaged output
+Editor/node_modules/
+Editor/dist/
+Editor/out/

@@ -32,8 +32,8 @@
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>HidHideCLI</RootNamespace>
     <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
-    <BldCompanyName>mikeev261</BldCompanyName>
-    <BldProductName>HidHide</BldProductName>
+    <BldCompanyName>HidHide Profiles</BldCompanyName>
+    <BldProductName>HidHide Profiles</BldProductName>
     <BldCopyright>Eric Korff de Gidts</BldCopyright>
   </PropertyGroup>
   <Import Project="..\build\ProductVersion.targets" />

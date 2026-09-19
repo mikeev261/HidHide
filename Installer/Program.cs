@@ -5,13 +5,11 @@ using WixSharp;
 namespace HidHide.Installer;
 
 /// <summary>
-/// Builds the Secure-Boot-compatible HidHide App Profiles companion MSI.
-/// The package installs only user-mode tools and deliberately leaves the separately installed,
-/// Microsoft-signed HidHide driver untouched.
+    /// Builds the Secure-Boot-compatible legacy companion or public HidHide Profiles MSI.
 /// </summary>
 public static class Program
 {
-    const string Manufacturer = "mikeev261";
+    const string CompanionManufacturer = "mikeev261";
 
     /// <summary>
     /// Identifies only the user-mode companion product family. This must never match
@@ -45,7 +43,7 @@ public static class Program
 
             string installRel = options.Unified ? @"%ProgramFiles64Folder%\HidHide" : @"%ProgramFiles64Folder%\HidHide App Profiles";
             // Must be a root-level Dir sibling of the install tree (WiX 5 / WIX0094); see WixSharp #1727, #1855.
-            string startMenuRel = options.Unified ? @"%ProgramMenu%\HidHide" : @"%ProgramMenu%\HidHide App Profiles";
+            string startMenuRel = options.Unified ? @"%ProgramMenu%\HidHide Profiles" : @"%ProgramMenu%\HidHide App Profiles";
             string sd = options.StagingDir;
             var installDir = new Dir(
                 installRel,
@@ -81,11 +79,12 @@ public static class Program
                 OutFileName = "HidHideAppProfiles",
             };
 
-            project.ControlPanelInfo.Manufacturer = Manufacturer;
+            project.ControlPanelInfo.Manufacturer = options.Unified ? ProductContract.Publisher : CompanionManufacturer;
             if (options.Unified) UnifiedPreview.Configure(project, installDir, options.DriverPayload);
 
             // Align with WiX 5.x + WixToolset.UI.wixext/5.0.x; WiX 6 defaults are not compatible with WixSharp + WixUI without tweaks.
             WixExtension.UI.PreferredVersion = "5.0.2";
+            WixExtension.Util.PreferredVersion = "5.0.2";
 
             ReleaseSigning.Configure(project);
             string msiPath = project.BuildMsi();
@@ -145,7 +144,7 @@ public static class Program
                     output = RequirePath(args, ref i, "out");
                 else if (a is "--platform" or "-p")
                     arch = RequireArg(args, ref i, "platform");
-                else if (a == "--unified-preview") unified = true;
+                else if (a is "--unified" or "--unified-preview") unified = true;
                 else if (a == "--driver-payload") driverPayload = RequirePath(args, ref i, "driver-payload");
                 else if (a is "--help" or "-h")
                     PrintHelp();
@@ -205,8 +204,8 @@ public static class Program
                   --staging, -s   Flat folder with all payload files (see INSTALL_LAYOUT.md)
                   --out, -o       MSI output directory
                   --platform, -p  x64 | ARM64 (default: x64)
-                  --unified-preview Build the guarded private MSI development preview
-                  --driver-payload Verified INF/SYS/CAT/license folder for the preview
+                  --unified         Build the public HidHide Profiles MSI
+                  --driver-payload Verified INF/SYS/CAT/license folder
 
                 Environment (optional):
                   HIDHIDE_INSTALLER_STAGING, HIDHIDE_INSTALLER_OUT
@@ -223,7 +222,7 @@ public static class Program
         public void Validate()
         {
             if (Unified && (Platform != Platform.x64 || string.IsNullOrEmpty(DriverPayload)))
-                throw new ArgumentException("Unified preview requires x64 and --driver-payload pointing to the verified signed package.");
+                throw new ArgumentException("Unified MSI requires x64 and --driver-payload pointing to the verified signed package.");
             if (Unified) HidHide.DriverSetup.Payload.Verify(DriverPayload);
             if (!Directory.Exists(StagingDir))
                 throw new DirectoryNotFoundException($"Staging directory not found: {StagingDir}");

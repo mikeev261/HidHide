@@ -1,4 +1,7 @@
-# Driver lifecycle backend and private MSI preview
+# Historical driver lifecycle and private-MSI implementation
+
+This document describes the retired Burn/private-MSI implementation. The current
+public MSI contract is in `unified-package-design.md` and `INSTALL_LAYOUT.md`.
 
 Status: implemented backend/transaction hooks and Burn development preview; **not a lifecycle-validated release**.
 The build produces a reviewable private MSI preview. Do not distribute or install

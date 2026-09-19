@@ -6,7 +6,10 @@
 #include "Utils.h"
 #include "Volume.h"
 #include "ConfigurationChannel.h"
+#include "ConfigurationReconciliation.h"
 #include "ProfileProcessMatch.h"
+#include "ProfileRecovery.h"
+#include "StartupEntry.h"
 
 #include <TlHelp32.h>
 
@@ -14,8 +17,11 @@ namespace
 {
     constexpr auto RUNTIME_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileRuntime" };
     constexpr auto RUN_KEY{ L"Software\\Microsoft\\Windows\\CurrentVersion\\Run" };
-    constexpr auto RUN_VALUE{ L"HidHide App Profiles" };
+    constexpr auto RUN_VALUE{ L"HidHide Profiles" };
+    constexpr auto LEGACY_RUN_VALUE{ L"HidHide App Profiles" };
     constexpr auto CONTROL_KEY{ L"Software\\Nefarius Software Solutions e.U.\\HidHide\\AppProfileControl" };
+    constexpr auto RECOVERY_V1{ L"TransactionV1" };
+    constexpr auto RECOVERY_V2{ L"TransactionV2" };
 
     void WritePaused(bool paused)
     {
@@ -227,14 +233,6 @@ void CProfileManager::ConfigureAutoStart(bool enabled) const
         KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, &disposition) };
     if (ERROR_SUCCESS != status) THROW_WIN32(status);
 
-    if (!enabled)
-    {
-        status = ::RegDeleteValueW(key, RUN_VALUE);
-        ::RegCloseKey(key);
-        if ((ERROR_SUCCESS != status) && (ERROR_FILE_NOT_FOUND != status)) THROW_WIN32(status);
-        return;
-    }
-
     std::vector<WCHAR> modulePath(32768);
     DWORD const length{ ::GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size())) };
     if ((0 == length) || (length >= modulePath.size()))
@@ -245,23 +243,40 @@ void CProfileManager::ConfigureAutoStart(bool enabled) const
     }
 
     std::wstring const command{ L"\"" + std::wstring(modulePath.data(), length) + L"\" --background" };
-    DWORD existingSize{};
-    DWORD existingType{};
-    if (ERROR_SUCCESS == ::RegQueryValueExW(key, RUN_VALUE, nullptr, &existingType, nullptr, &existingSize)
-        && REG_SZ == existingType && 0 != existingSize)
+    auto const legacyPath = std::filesystem::path(modulePath.data(), modulePath.data() + length)
+        .parent_path().parent_path() / L"HidHide App Profiles" / L"HidHideClient.exe";
+    std::wstring const legacyCommand{ L"\"" + legacyPath.native() + L"\" --background" };
+    auto ReadValue = [key](LPCWSTR name) -> std::optional<std::wstring>
     {
-        std::vector<WCHAR> existing((existingSize / sizeof(WCHAR)) + 1, L'\0');
-        if (ERROR_SUCCESS == ::RegQueryValueExW(key, RUN_VALUE, nullptr, &existingType,
-            reinterpret_cast<BYTE*>(existing.data()), &existingSize)
-            && command == existing.data())
-        {
-            ::RegCloseKey(key);
-            return;
-        }
-    }
+        DWORD type{}, size{};
+        auto error = ::RegQueryValueExW(key, name, nullptr, &type, nullptr, &size);
+        if (error == ERROR_FILE_NOT_FOUND) return std::nullopt;
+        if (error != ERROR_SUCCESS || type != REG_SZ || size < sizeof(WCHAR)
+            || size % sizeof(WCHAR) != 0 || size > 32768 * sizeof(WCHAR)) return std::wstring{};
+        auto const characters = size / sizeof(WCHAR);
+        std::vector<WCHAR> value(characters + 1, L'\0');
+        error = ::RegQueryValueExW(key, name, nullptr, &type, reinterpret_cast<BYTE*>(value.data()), &size);
+        if (error != ERROR_SUCCESS || type != REG_SZ || size / sizeof(WCHAR) != characters
+            || value[characters - 1] != L'\0'
+            || std::find(value.begin(), value.begin() + characters - 1, L'\0') != value.begin() + characters - 1)
+            return std::wstring{};
+        return std::wstring(value.data(), characters - 1);
+    };
+    auto const plan = HidHide::PlanStartupEntry(enabled, ReadValue(RUN_VALUE), ReadValue(LEGACY_RUN_VALUE), command, legacyCommand);
 
-    status = ::RegSetValueExW(key, RUN_VALUE, 0, REG_SZ, reinterpret_cast<BYTE const*>(command.c_str()),
-        static_cast<DWORD>((command.size() + 1) * sizeof(WCHAR)));
+    auto DeleteOwned = [key, &status](LPCWSTR name)
+    {
+        if (status != ERROR_SUCCESS) return;
+        auto const removed = ::RegDeleteValueW(key, name);
+        if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) status = removed;
+    };
+    if (plan.setCurrent)
+    {
+        status = ::RegSetValueExW(key, RUN_VALUE, 0, REG_SZ, reinterpret_cast<BYTE const*>(command.c_str()),
+            static_cast<DWORD>((command.size() + 1) * sizeof(WCHAR)));
+    }
+    if (plan.deleteCurrent) DeleteOwned(RUN_VALUE);
+    if (plan.deleteLegacy) DeleteOwned(LEGACY_RUN_VALUE);
     ::RegCloseKey(key);
     if (ERROR_SUCCESS != status) THROW_WIN32(status);
 }
@@ -291,14 +306,16 @@ HidHide::Configuration CProfileManager::PrepareMaintenance()
     Observe();
     ExitSafely(); // Preserves the persisted pause preference; refuses conflicts.
     auto const confirmed = HidHide::FilterDriverProxy::ReadDriverConfiguration();
-    if (confirmed != m_Baseline) throw std::runtime_error("Baseline restoration was not confirmed; maintenance refused");
+    if (HidHide::DriverState(confirmed) != HidHide::DriverState(m_Baseline))
+        throw std::runtime_error("Baseline restoration was not confirmed; maintenance refused");
     return confirmed;
 }
 
 void CProfileManager::Observe()
 {
     auto current = HidHide::FilterDriverProxy::ReadDriverConfiguration();
-    if (current != m_Expected)
+    auto const liveProfiles = current.profiles;
+    if (HidHide::DriverState(current) != HidHide::DriverState(m_Expected))
     {
         if (m_OverrideActive || m_JournalPending)
         {
@@ -307,12 +324,20 @@ void CProfileManager::Observe()
         }
         else if (!m_Conflict) { m_Baseline = current; m_Expected = std::move(current); }
     }
+    // ReadDriverConfiguration reads ConfigurationV1 on every coordinator read.
+    // Refresh the per-user catalog even when the driver state is unchanged; its
+    // edit is not an external driver mutation and must not create a conflict.
+    HidHide::ConfigurationReconciliation::ApplyLiveProfileCatalog(m_Baseline, m_Expected, liveProfiles);
 }
 
 HidHide::Configuration CProfileManager::ReadUserConfiguration()
 {
     HidHide::Maintenance::Admission admission;
     Observe();
+    // Serve the durable catalog, not a scan-cycle cache. This also makes a
+    // coordinator read self-healing if startup observed an older catalog.
+    HidHide::ConfigurationReconciliation::ApplyLiveProfileCatalog(
+        m_Baseline, m_Expected, HidHide::FilterDriverProxy::ReadProfileCatalog());
     return m_Baseline;
 }
 
@@ -322,6 +347,19 @@ void CProfileManager::CommitUserConfiguration(HidHide::Configuration const& expe
     Observe();
     if (m_Conflict) throw std::runtime_error("Profile ownership conflict. Accept current driver settings from the manager tray menu before editing");
     if (expected != m_Baseline) throw HidHide::ConfigurationConflict("Settings changed since this command started. Refresh and retry");
+    bool const profilesChanged = desired.profiles != m_Baseline.profiles;
+    bool const driverChanged = HidHide::DriverState(desired) != HidHide::DriverState(m_Baseline);
+    if (profilesChanged && (driverChanged || disable))
+        throw std::invalid_argument("Profile and driver settings must be changed in separate commands");
+    // Catalog edits are durable source changes and commit independently before
+    // any derived driver transition. A later IOCTL failure must not roll them back.
+    if (profilesChanged)
+    {
+        HidHide::FilterDriverProxy::CommitProfileCatalog(m_Baseline.profiles, desired.profiles);
+        m_Baseline.profiles = desired.profiles;
+        m_Expected.profiles = desired.profiles;
+        return;
+    }
     // An explicit off command suspends automatic overrides, including when the
     // saved baseline was already off and a running profile temporarily enabled it.
     bool const suspend = m_Suspended || disable;
@@ -335,9 +373,14 @@ void CProfileManager::Transition(HidHide::Configuration const& baseline, HidHide
     if (m_Conflict) throw std::runtime_error("Profile reconciliation is suspended because driver settings changed externally");
     auto desired = HidHide::EffectiveConfiguration(baseline, devices, suspended);
     bool const overrideActive = !suspended && !devices.empty();
-    if ((overrideActive || m_JournalPending) && (desired != m_Expected || baseline != m_Baseline || !m_JournalPending))
+    if ((overrideActive || m_JournalPending) && (HidHide::DriverState(desired) != HidHide::DriverState(m_Expected)
+        || HidHide::DriverState(baseline) != HidHide::DriverState(m_Baseline) || !m_JournalPending))
         SaveRecoveryState(baseline, m_Expected, desired);
-    HidHide::FilterDriverProxy::CommitDriverConfiguration(m_Expected, desired);
+    HidHide::ConfigurationReconciliation::CommitAutomaticDriverTransition(m_Expected, desired,
+        [](auto const& expectedDriver, auto const& desiredDriver)
+        {
+            HidHide::FilterDriverProxy::CommitDriverState(expectedDriver, desiredDriver);
+        });
     // Advance ownership only after read-back confirmation.
     m_Baseline = baseline; m_Expected = std::move(desired);
     m_LastProfileDevices = devices; m_Suspended = suspended; m_OverrideActive = overrideActive;
@@ -401,13 +444,14 @@ void CProfileManager::Pause()
 void CProfileManager::SaveRecoveryState(HidHide::Configuration const& baseline,
     HidHide::Configuration const& before, HidHide::Configuration const& after)
 {
-    HidHide::Protocol::Writer record;
-    record.Number(HidHide::Protocol::Version); record.String(HidHide::Channel::CurrentSid());
-    record.State(baseline); record.State(before); record.State(after);
+    auto record = HidHide::ProfileRecovery::SerializeV2(HidHide::Channel::CurrentSid(), {
+        HidHide::DriverState(baseline), HidHide::DriverState(before), HidHide::DriverState(after) });
     HKEY key{};
     auto error = ::RegCreateKeyExW(HKEY_CURRENT_USER, RUNTIME_KEY, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr);
     if (error != ERROR_SUCCESS) THROW_WIN32(error);
-    error = ::RegSetValueExW(key, L"TransactionV1", 0, REG_BINARY, record.data.data(), static_cast<DWORD>(record.data.size()));
+    error = ::RegSetValueExW(key, RECOVERY_V2, 0, REG_BINARY, record.data(), static_cast<DWORD>(record.size()));
+    if (error == ERROR_SUCCESS) error = ::RegDeleteValueW(key, RECOVERY_V1);
+    if (error == ERROR_FILE_NOT_FOUND) error = ERROR_SUCCESS;
     if (error == ERROR_SUCCESS) error = ::RegFlushKey(key);
     ::RegCloseKey(key);
     if (error != ERROR_SUCCESS) THROW_WIN32(error);
@@ -435,19 +479,32 @@ void CProfileManager::Recover()
         {
             if (opened != ERROR_SUCCESS) throw std::runtime_error("Cannot read recovery journal");
             DWORD type{}, size{};
-            if (::RegQueryValueExW(key, L"TransactionV1", nullptr, &type, nullptr, &size) != ERROR_SUCCESS
-                || type != REG_BINARY || size > HidHide::Protocol::MaxBytes) throw std::runtime_error("Legacy or malformed recovery record");
+            auto valueName = RECOVERY_V2;
+            auto readError = ::RegQueryValueExW(key, valueName, nullptr, &type, nullptr, &size);
+            if (readError == ERROR_FILE_NOT_FOUND)
+            {
+                valueName = RECOVERY_V1;
+                readError = ::RegQueryValueExW(key, valueName, nullptr, &type, nullptr, &size);
+            }
+            if (readError != ERROR_SUCCESS || type != REG_BINARY || size > HidHide::Protocol::MaxBytes)
+                throw std::runtime_error("Legacy or malformed recovery record");
             std::vector<std::uint8_t> bytes(size);
-            if (::RegQueryValueExW(key, L"TransactionV1", nullptr, &type, bytes.data(), &size) != ERROR_SUCCESS || type != REG_BINARY)
+            if (::RegQueryValueExW(key, valueName, nullptr, &type, bytes.data(), &size) != ERROR_SUCCESS || type != REG_BINARY)
                 throw std::runtime_error("Incomplete recovery record");
             bytes.resize(size);
-            HidHide::Protocol::Reader reader(bytes);
-            if (reader.Number() != HidHide::Protocol::Version || reader.String() != HidHide::Channel::CurrentSid())
-                throw std::runtime_error("Recovery record owner or version mismatch");
-            auto baseline = reader.State(); auto before = reader.State(); auto after = reader.State(); reader.End();
-            if (m_Expected != before && m_Expected != after && m_Expected != baseline) throw std::runtime_error("Recovery state differs from actual driver settings");
-            HidHide::FilterDriverProxy::CommitDriverConfiguration(m_Expected, baseline);
-            m_Baseline = baseline; m_Expected = std::move(baseline);
+            auto const record = HidHide::ProfileRecovery::Parse(bytes, HidHide::Channel::CurrentSid());
+            auto const current = HidHide::DriverState(m_Expected);
+            if (!HidHide::ProfileRecovery::MatchesRecordedDriverState(current, record.baseline, record.before, record.after))
+                throw std::runtime_error("Recovery state differs from actual driver settings");
+            // Restore exactly the four driver fields. The live ConfigurationV1
+            // catalog was read above and is deliberately retained.
+            auto restored = HidHide::ProfileRecovery::RestoreDriverState(m_Expected, record.baseline);
+            HidHide::ConfigurationReconciliation::CommitAutomaticDriverTransition(m_Expected, restored,
+                [](auto const& expectedDriver, auto const& desiredDriver)
+                {
+                    HidHide::FilterDriverProxy::CommitDriverState(expectedDriver, desiredDriver);
+                });
+            m_Baseline = restored; m_Expected = std::move(restored);
             ::RegCloseKey(key); key = nullptr;
             ClearRecoveryState();
         }

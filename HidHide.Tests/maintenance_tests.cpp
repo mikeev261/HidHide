@@ -1,11 +1,48 @@
 // SPDX-License-Identifier: MIT
 #include <gtest/gtest.h>
 #include "Maintenance.h"
+#include "MaintenanceSession.h"
 #include "DriverRegistrySnapshot.h"
 #include <future>
 #include <thread>
 #pragma comment(lib, "Advapi32.lib")
 using namespace HidHide;
+TEST(Maintenance, UninstallRemovesOnlyExactOwnedStartupCommands) {
+    auto path = L"Software\\HidHide.Tests\\StartupCleanup-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    HKEY key{};
+    ASSERT_EQ(ERROR_SUCCESS, RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &key, nullptr));
+    struct Cleanup { HKEY key; std::wstring path; ~Cleanup() { RegCloseKey(key); RegDeleteKeyW(HKEY_CURRENT_USER, path.c_str()); } } cleanup{key,path};
+    std::wstring current = L"\"C:\\Program Files\\HidHide\\HidHideClient.exe\" --background";
+    std::wstring legacy = L"\"C:\\Program Files\\HidHide App Profiles\\HidHideClient.exe\" --background";
+    auto write = [&](PCWSTR name, std::wstring const& value) {
+        ASSERT_EQ(ERROR_SUCCESS, RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<BYTE const*>(value.c_str()), static_cast<DWORD>((value.size()+1)*sizeof(wchar_t))));
+    };
+    auto exists = [&](PCWSTR name) { return RegQueryValueExW(key, name, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS; };
+    write(L"HidHide Profiles", current);
+    write(L"HidHide App Profiles", L"\"C:\\Other\\Utility.exe\"");
+    write(L"Other App", current);
+    RemoveOwnedStartupValues(key, current, legacy);
+    EXPECT_FALSE(exists(L"HidHide Profiles"));
+    EXPECT_TRUE(exists(L"HidHide App Profiles"));
+    EXPECT_TRUE(exists(L"Other App"));
+    write(L"HidHide Profiles", current + L" --foreign-argument");
+    write(L"HidHide App Profiles", legacy);
+    RemoveOwnedStartupValues(key, current, legacy);
+    EXPECT_TRUE(exists(L"HidHide Profiles"));
+    EXPECT_FALSE(exists(L"HidHide App Profiles"));
+    EXPECT_TRUE(exists(L"Other App"));
+}
+TEST(Maintenance, MsiSessionUsesOnlyStrictTransactionIdentities) {
+    auto const valid = std::wstring(L"01234567-89ab-cdef-0123-456789abcdef");
+    EXPECT_TRUE(ValidMsiTransactionId(valid));
+    EXPECT_EQ(L"Global\\HidHide.Profiles.Msi.Ready." + valid, MsiEventName(L"Ready", valid));
+    for (auto const& value : { L"", L"{01234567-89ab-cdef-0123-456789abcdef}",
+        L"01234567-89ab-cdef-0123-456789abcdeg", L"01234567-89ab-cdef-0123-456789abcdef\\Other" })
+    {
+        EXPECT_FALSE(ValidMsiTransactionId(value));
+        EXPECT_THROW(MsiEventName(L"Ready", value), std::runtime_error);
+    }
+}
 TEST(Maintenance, StoredBaselineListsRejectMalformedRegistryData) {
     using Maintenance::DecodeStoredDriverList;
     EXPECT_TRUE(DecodeStoredDriverList({L'\0'}).empty());

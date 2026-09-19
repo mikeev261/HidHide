@@ -75,11 +75,11 @@ BEGIN
     BLOCK "040904b0"
     BEGIN
       VALUE "CompanyName", _T(BldCompanyName)
-      VALUE "FileDescription", _T(BldCompanyName) " " _T(BldProductName)
+      VALUE "FileDescription", _T(BldProductName) " command line interface"
       VALUE "FileVersion", _T(BldProductVersion)
       VALUE "LegalCopyright", "© " _T(BldCopyright)
       VALUE "OriginalFilename", _T(TargetFileName)
-      VALUE "ProductName", _T(BldCompanyName) " " _T(BldProductName)
+      VALUE "ProductName", _T(BldProductName)
       VALUE "ProductVersion", _T(BldProductVersion)
     END
   END

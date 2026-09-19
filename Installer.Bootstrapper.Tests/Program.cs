@@ -56,12 +56,24 @@ void Click(ProgressWindow window, string control)
     {
         var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
         typeof(System.Windows.Forms.Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(form.Controls[control], new object[] { EventArgs.Empty });
+            .Invoke(form.Controls.Find(control, true).Single(), new object[] { EventArgs.Empty });
     });
 }
-using (var window = new ProgressWindow("install", false, false))
+var completedWindow = new ProgressWindow("install", false, false);
+using (completedWindow)
 {
+    var window = completedWindow;
     Check(window.Handle != IntPtr.Zero, "real responsive parent HWND exists before setup begins");
+    window.Invoke(() =>
+    {
+        var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        Check(form.Text == "HidHide Profiles Setup" && form.ClientSize.Width == 560 && form.ClientSize.Height == 330,
+            "setup uses a conventional product-titled dialog footprint");
+        Check(form.Controls.Find("Title", true).Single().Text == "Install HidHide Profiles" && form.Controls.Find("Continue", true).Single().Text == "Install",
+            "clean install begins with an explicit Install action");
+        Check(form.Controls.Find("Status", true).Single() is System.Windows.Forms.Label && !form.Controls.Find("Progress", true).Single().Visible,
+            "welcome page uses normal explanatory text without a premature scrolling progress area");
+    });
     var start = Task.Run(window.WaitForStart);
     Click(window, "Continue");
     Check(start.Wait(2000) && start.Result, "Continue button releases worker through actual UI event");
@@ -69,7 +81,7 @@ using (var window = new ProgressWindow("install", false, false))
     window.Invoke(() =>
     {
         var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
-        Check(form.Controls["Status"].Text == "Caching payload" && ((System.Windows.Forms.ProgressBar)form.Controls["Progress"]).Value == 37, "worker progress marshals to actual controls");
+        Check(form.Controls.Find("Status", true).Single().Text == "Caching payload" && ((System.Windows.Forms.ProgressBar)form.Controls.Find("Progress", true).Single()).Value == 37, "worker progress marshals to actual controls");
     });
     Click(window, "Cancel");
     Check(window.CancellationRequested, "Cancel button records cooperative request");
@@ -101,10 +113,40 @@ using (var window = new ProgressWindow("install", false, false))
     Click(window, "Cancel");
     Check(Task.Run(window.WaitForClose).Wait(2000), "Close button ends actual STA window loop after completion");
 }
+completedWindow.Dispose();
+Check(true, "disposing after the completed STA loop is idempotent and does not invoke a closed form");
 using (var window = new ProgressWindow("repair", true, false))
 {
+    window.Invoke(() =>
+    {
+        var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        Check(form.Controls.Find("Title", true).Single().Text == "Finish setting up HidHide Profiles" && form.Controls.Find("Continue", true).Single().Text == "Continue" && !form.Controls.Find("RestoreLegacy", true).Single().Visible,
+            "old recovery marker gets one truthful generic continuation action");
+    });
     Click(window, "Cancel");
     Check(!window.WaitForStart(), "initial Cancel refuses operation before preparation");
+}
+using (var window = new ProgressWindow("install", true, false, recoveryOperation: "uninstall", canRestoreLegacy: true))
+{
+    window.Invoke(() =>
+    {
+        var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        Check(form.Controls.Find("Title", true).Single().Text == "Finish uninstalling HidHide Profiles" && form.Controls.Find("Continue", true).Single().Text == "Finish uninstall" && !form.Controls.Find("RestoreLegacy", true).Single().Visible,
+            "pending unified uninstall exposes only finish-uninstall action");
+    });
+    Click(window, "Cancel");
+    Check(!window.WaitForStart(), "pending uninstall can close without mutation");
+}
+using (var window = new ProgressWindow("install", true, false, recoveryOperation: "install", restartPending: true))
+{
+    window.Invoke(() =>
+    {
+        var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        Check(form.Controls.Find("Title", true).Single().Text == "Restart required to finish setup" && form.Controls.Find("Status", true).Single().Text.Contains("If you have already restarted"),
+            "pending restart gives explicit before-and-after-reboot guidance");
+    });
+    Click(window, "Cancel");
+    Check(!window.WaitForStart(), "pending restart can close without mutation");
 }
 using (var window = new ProgressWindow("install", false, false))
 {
@@ -123,13 +165,26 @@ using (var window = new ProgressWindow("uninstall", false, false))
         Check(!form.IsDisposed && window.CancellationRequested, "titlebar Close requests cancellation and keeps active worker window alive");
     });
 }
-using (var window = new ProgressWindow("repair", true, false))
+using (var window = new ProgressWindow("repair", true, false, recoveryOperation: "install", canRestoreLegacy: true))
 {
     Click(window, "RestoreLegacy");
     Check(window.WaitForStart() && window.RestoreLegacyRequested && !window.CancellationRequested, "explicit restore button selects legacy recovery through actual UI event");
     window.Finish("Previous installation restored", true);
     Click(window, "Cancel");
     Check(Task.Run(window.WaitForClose).Wait(2000), "legacy completion window closes cleanly");
+}
+using (var window = new ProgressWindow("install", false, false))
+{
+    Click(window, "Continue");
+    window.Finish("Restart Windows to finish configuring the device driver.", false, restartRequired: true);
+    window.Invoke(() =>
+    {
+        var form = (System.Windows.Forms.Form)typeof(ProgressWindow).GetField("window", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+        Check(form.Controls.Find("Title", true).Single().Text == "Restart required" && form.Controls.Find("Continue", true).Single().Text == "Restart now" && form.Controls.Find("Cancel", true).Single().Text == "Restart later",
+            "restart-required completion offers conventional explicit restart choices");
+    });
+    Click(window, "Continue");
+    Check(Task.Run(window.WaitForClose).Wait(2000) && window.RestartRequested, "Restart now records explicit consent and closes setup");
 }
 foreach (bool recovering in new[] { false, true })
 {

@@ -82,3 +82,19 @@ poll interval, hidden-window quiescence, resume and the initial visibility race.
 filter persistence, saved/draft rule preservation and unknown device connection state.
 Set `HIDHIDE_TEST_ICON_EXE` to an existing local executable to verify its shell icon.
 See `docs/performance-review.md` for measured results and production limitations.
+
+## Appearance (2.1.14)
+
+The header offers Light mode / Dark mode independently of backend availability or
+unsaved profile edits. Both palettes use vivid red accents with neutral surfaces.
+Every custom dialog/control/status color is tokenized; native Electron appearance
+and the window background use the same choice. Preference saves are atomic and
+serialized in `editor-appearance.json` under Electron's ordinary-user data folder.
+Reload and startup read the saved choice before mounting the editor. Closing waits
+for an in-flight preference save. A failed save retains the previous theme and
+shows an error; profile JSON is never involved. The default remains dark.
+
+`node tests/themes.mjs` covers both themes, text contrast, dialogs, compact windows
+at 100-200 percent zoom, pending-draft preservation, reload persistence, write
+failure recovery and changing themes while the backend is unavailable.
+`npm test` also verifies preference storage across separate store instances.

@@ -40,3 +40,15 @@ Do not clear maintenance markers or delete registry entries to resolve failures.
 The legacy companion and upstream package must be removed normally before a clean
 HidHide Profiles installation. The public MSI never deletes registrations or
 guesses at legacy ownership.
+
+## Updating the unified package
+
+Run a newer same-family MSI directly; a manual uninstall is not required. When the
+verified pinned driver is already healthy, the upgrade replaces applications and
+retains the driver without adding a forced restart. A restart requested by actual
+driver maintenance or Windows Installer still takes precedence.
+
+Profile definitions and settings stay at the existing ordinary-user LocalAppData
+location across upgrade installs. They are never MSI-owned files or recursive
+removal targets. Electron appearance preferences likewise live outside the install
+directory. Upgrading does not reset or migrate either store in 2.1.14.

@@ -1,9 +1,10 @@
-const {app,BrowserWindow,ipcMain,protocol,net,dialog,shell,session}=require('electron');
+const {app,BrowserWindow,ipcMain,protocol,net,dialog,shell,session,nativeTheme}=require('electron');
 const {spawn}=require('node:child_process');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
 const fs=require('node:fs');
 const {createAppIconLoader}=require('./app-icons.cjs');
+const {createAppearanceStore}=require('./appearance.cjs');
 const MAX=4*1024*1024;
 const origin='hidhide://editor';
 protocol.registerSchemesAsPrivileged([{scheme:'hidhide',privileges:{standard:true,secure:true,supportFetchAPI:true}}]);
@@ -19,6 +20,7 @@ if(fixture)globalThis.__fixtureControl=require('./fixture.cjs').control;
 if(fixture||fixtureNative)app.setPath('userData',path.join(app.getPath('temp'),'HidHide-Editor-Fixture-'+process.pid));
 const native=app.isPackaged?path.resolve(path.dirname(process.execPath),'..','HidHideClient.exe'):path.resolve(__dirname,'../../bin/Release/x64/HidHideClient.exe');
 const commands=new Set(['snapshot','apply','settings','delete','retry','backup','restore','import','export','new','adopt','abandon-adoption']);
+function finishOperation(){inFlight--;if(!inFlight&&closeWhenIdle){closeWhenIdle=false;closing=true;window.close();}}
 function validSender(event){if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||!event.senderFrame.url.startsWith(origin+'/'))throw Error('Untrusted editor request.');}
 let bridge=null;
 if(fixtureNative)globalThis.__nativeBridgePid=()=>bridge?.child.pid??null;
@@ -74,7 +76,7 @@ function request(request){
    if(!result.ok){registered=false;return result;}
    if(!registered){const registration=await exchange({command:'editor-state',pid:process.pid,dirty});if(!registration.ok)throw Error(registration.error);registered=true;}
    return result;
-  }catch(error){registered=false;throw error;}finally{inFlight--;if(!inFlight&&closeWhenIdle){closeWhenIdle=false;closing=true;window.close();}}
+  }catch(error){registered=false;throw error;}finally{finishOperation();}
  });requestQueue=next.catch(()=>{});return next;
 }
 const pickers={
@@ -86,6 +88,8 @@ const pickers={
 if(!app.requestSingleInstanceLock()){app.quit();}else{
  app.on('second-instance',()=>{if(window){if(window.isMinimized())window.restore();window.show();window.focus();}});
  app.whenReady().then(async()=>{
+  const appearance=createAppearanceStore(app.getPath('userData'));
+  nativeTheme.themeSource=await appearance.load();
   protocol.handle('hidhide',request=>{
    const url=new URL(request.url);if(url.host!=='editor'||url.search)return new Response('',{status:403});
    const root=path.resolve(__dirname,'../dist');let file=path.resolve(root,'.'+decodeURIComponent(url.pathname==='/'?'/index.html':url.pathname));
@@ -93,7 +97,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   });
   session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));
   session.defaultSession.setPermissionCheckHandler(()=>false);
-  window=new BrowserWindow({width:1320,height:900,minWidth:600,minHeight:560,backgroundColor:'#181617',title:'HidHide Profiles',autoHideMenuBar:true,show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:!app.isPackaged}});
+  window=new BrowserWindow({width:1320,height:900,minWidth:600,minHeight:560,backgroundColor:appearance.get()==='light'?'#f5f5f5':'#121212',title:'HidHide Profiles',autoHideMenuBar:true,show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,devTools:!app.isPackaged}});
   window.removeMenu();window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   const announceVisibility=()=>window.webContents.send('editor:visibility',window.isVisible()&&!window.isMinimized());
   window.on('show',announceVisibility);window.on('hide',announceVisibility);
@@ -101,6 +105,8 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   window.webContents.on('will-navigate',e=>e.preventDefault());window.webContents.on('will-attach-webview',e=>e.preventDefault());
   window.on('close',e=>{if(!closing){e.preventDefault();window.webContents.send('editor:request-close');}});
   window.webContents.on('render-process-gone',()=>{dirty=false;closing=true;window.destroy();});
+  ipcMain.handle('editor:theme-current',event=>{validSender(event);return appearance.get();});
+  ipcMain.handle('editor:theme',async(event,value)=>{validSender(event);inFlight++;try{const theme=await appearance.set(value);nativeTheme.themeSource=theme;window.setBackgroundColor(theme==='light'?'#f5f5f5':'#121212');return theme;}finally{finishOperation();}});
   ipcMain.handle('editor:request',(event,value)=>{validSender(event);return request(value).catch(error=>({ok:false,error:error.message}));});
   ipcMain.handle('editor:visibility',event=>{validSender(event);return window.isVisible()&&!window.isMinimized();});
   ipcMain.handle('editor:icon',(event,filePath)=>{validSender(event);return loadAppIcon(filePath);});

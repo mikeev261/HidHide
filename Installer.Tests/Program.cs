@@ -44,6 +44,14 @@ Check(ProductContract.Select(ProductContract.UpstreamUpgradeCode, ProductContrac
 var retiredPrivate215 = new Guid("6D41E09C-0D7C-DE9A-B76B-B80CD09A1AD9");
 Check(ProductContract.UnifiedProductCode(new Version(2,1,5,0)) == retiredPrivate215, "Retired 2.1.5 private MSI identity remains deterministic");
 Check(ProductContract.Select(ProductContract.MsiUpgradeCode, retiredPrivate215, new Version(2,1,5,0), new Version(2,1,10,0)) == ProductContract.Operation.Upgrade, "Retired 2.1.5 private MSI is an upgrade, not a fresh install");
+Check(!DirectMsiPolicy.RequiresRestart("upgrade", false, false), "Healthy same-family upgrade does not add a reboot requirement");
+Check(DirectMsiPolicy.RequiresRestart("upgrade", false, true), "Upgrade preserves a real native driver reboot requirement");
+Check(!DirectMsiPolicy.RequiresRestart("upgrade", true, false), "Completed upgrade recovery does not invent a reboot");
+foreach (var operation in new[] { "install", "repair", "uninstall" }) {
+ Check(DirectMsiPolicy.RequiresRestart(operation, false, false), "Initial driver lifecycle retains its restart boundary: " + operation);
+ Check(!DirectMsiPolicy.RequiresRestart(operation, true, false), "Completed recovery can finish after restart: " + operation);
+ Check(DirectMsiPolicy.RequiresRestart(operation, true, true), "Recovery retains actual native restart requirement: " + operation);
+}
 Check(!DirectMsiPolicy.NeedsResidentHelper("install", false), "Fresh install has no resident helper dependency");
 Check(!DirectMsiPolicy.NeedsResidentHelper("upgrade", false), "Upgrade cannot depend on an older CLI protocol");
 Check(DirectMsiPolicy.NeedsResidentHelper("repair", false), "Repair coordinates through the current installed CLI");

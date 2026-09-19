@@ -1,5 +1,22 @@
 # Unified package progress
 
+## Light/dark appearance and upgrade preservation — 2026-09-19
+
+Candidate 2.1.14 uses vivid red accents with neutral grey/black dark surfaces and
+adds a complete light palette. The always-available theme button saves immediately
+in the ordinary user's Electron preferences, separately from profile edits, and
+restores the selected appearance on launch. Dialogs, inputs, errors, warnings,
+selection, focus and native Electron appearance follow the selected theme.
+
+The user reports that the 2.1.13 upgrade completed without manually uninstalling
+the older version or restarting Windows. This is host feedback, not a complete
+upgrade matrix. The existing application-only upgrade path remains: retain a
+healthy pinned driver, skip the forced restart boundary, and preserve any restart
+actually requested by native maintenance. Profile JSON remains under the same
+per-user LocalAppData root, outside MSI component/removal ownership. Regression
+checks now evaluate the emitted MSI upgrade conditions and enforce that separation.
+The exact 2.1.14 install/upgrade lifecycle has not been run on the host.
+
 ## Editor performance and device presentation — 2026-09-19
 
 Candidate 2.1.13 removes the native pipe polling delay, retains one authenticated

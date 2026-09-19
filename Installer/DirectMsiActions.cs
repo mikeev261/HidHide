@@ -149,7 +149,7 @@ public static class DirectMsiActions
             }
             current = new ProtectedJournal(id).Load();
             using (var lease = new MaintenanceLease(id, recovery: true))
-                lease.MarkPending(false, operation, restartRequired: current.Reboot || !recovery && operation != "upgrade");
+                lease.MarkPending(false, operation, restartRequired: DirectMsiPolicy.RequiresRestart(operation, recovery, current.Reboot));
             SignalRelease(id); // Confirmed checkpoint; helper can remove owned startup on uninstall.
             if (helperProcess != null && (!helperProcess.WaitForExit(5000) || helperProcess.ExitCode != 0))
                 throw new InvalidOperationException("Configuration maintenance did not finish successfully. Recovery information was retained.");

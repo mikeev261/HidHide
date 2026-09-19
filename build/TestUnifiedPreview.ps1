@@ -42,6 +42,16 @@ try {
  $dirs=@{}; Rows Directory | ForEach-Object {$dirs[$_.Values[0]]=$_.Values}
  Check ($dirs.INSTALLDIR[1] -eq 'ProgramFiles64Folder' -and $dirs.INSTALLDIR[2] -eq 'HidHide') 'Application installation directory'
  Check ($dirs.Driver[1] -eq 'INSTALLDIR' -and $dirs.Driver[2] -eq 'Driver') 'Driver payload directory'
+ # User profile JSON and Electron preferences must never become MSI-owned
+ # components: major-upgrade removal may remove every component in the old MSI.
+ Check (@($dirs.Values | Where-Object { $_[0] -in @('LocalAppDataFolder','AppDataFolder','PersonalFolder') -or $_[2].Split('|')[-1] -eq 'Profiles' }).Count -eq 0) 'Per-user profiles and editor preferences are outside MSI-owned directories'
+ $tables=@(Rows _Tables | ForEach-Object { $_.Values[0] })
+ if ($tables -contains 'RemoveFile') {
+  foreach ($entry in @(Rows RemoveFile)) {
+   Check ($dirs.ContainsKey($entry.Values[3])) ('Removal targets only a declared MSI directory: '+$entry.Values[0])
+  }
+ }
+ Check ($tables -notcontains 'Wix4RemoveFolderEx' -and $tables -notcontains 'WixRemoveFolderEx') 'No recursive folder removal can delete user profile repositories'
  $components=@{}; Rows Component | ForEach-Object {$components[$_.Values[0]]=$_.Values}
  foreach($component in $components.Values) {
   Check (([int]$component[3] -band 256) -ne 0) ('64-bit component: '+$component[0])
@@ -109,6 +119,15 @@ try {
    $session.Property('Installed')=$installed
    return [int]$session.EvaluateCondition($platformCondition)
   }
+  $session.Property('WIX_UPGRADE_DETECTED')='{OLD-UNIFIED-PRODUCT}'
+  $session.Property('Installed')=''
+  Check ([int]$session.EvaluateCondition($sequence.ForceReboot[1]) -eq 0) 'Actual MSI condition skips forced reboot on application upgrade'
+  $session.Property('WIX_UPGRADE_DETECTED')=''
+  $session.Property('UPGRADINGPRODUCTCODE')='{NEW-UNIFIED-PRODUCT}'
+  foreach($name in @('PrepareHidHideOperation','PrepareHidHideUser','ApplyHidHideDriver','FinalizeHidHideDriver','ForceReboot')) {
+   Check ([int]$session.EvaluateCondition($sequence[$name][1]) -eq 0) ('Old-product upgrade removal retains driver and skips restart: '+$name)
+  }
+  $session.Property('UPGRADINGPRODUCTCODE')=''
   Check ((PlatformResult '34404' '22000' '1') -eq 1) 'Windows 11 x64 minimum build passes the platform gate'
   Check ((PlatformResult '34404' '26200' '1') -eq 1) 'Current Windows 11 x64 build passes the platform gate'
   Check ((PlatformResult '34404' '19045' '1') -eq 0) 'Windows 10 x64 fails the platform gate'

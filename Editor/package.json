@@ -1,6 +1,6 @@
 {
   "name": "hidhide-profiles-editor",
-  "version": "2.1.13",
+  "version": "2.1.14",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",

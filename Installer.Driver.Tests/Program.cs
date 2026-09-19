@@ -30,6 +30,7 @@ foreach (var operation in new[] { Operation.Repair, Operation.Upgrade }) {
  var backend = Fake.Healthy(); var saved = Record(backend, operation);
  Check(new DriverTransaction(backend, new MemoryJournal(), saved).Apply() == JournalStatus.Applied, "Healthy driver retained");
  Check(backend.Calls.Count == 0, "Repair/upgrade do not reinstall or reset settings");
+ Check(!saved.Reboot, "Healthy retained driver does not invent a reboot during repair/upgrade");
 }
 var repairFilters = Fake.Healthy(); repairFilters.State.Filters[1].Entries = new[] { "VendorA", "VendorB" };
 var repairRecord = Record(repairFilters, Operation.Repair);

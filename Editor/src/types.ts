@@ -10,6 +10,8 @@ export type Draft = {profile:Profile; settings:Settings; original:Profile|null; 
 export type Picker = 'executable'|'import'|'backup'|'restore'|'export';
 declare global {
  interface Window { hidHide: {
+  getTheme:()=>Promise<'light'|'dark'>;
+  setTheme:(theme:'light'|'dark')=>Promise<'light'|'dark'>;
   request:(request:Record<string,unknown>)=>Promise<Reply>;
   isVisible:()=>Promise<boolean>;
   onVisibility:(callback:(visible:boolean)=>void)=>()=>void;

@@ -19,6 +19,9 @@ const fixtureNative=!app.isPackaged&&fixtureIndex>=0?process.argv[fixtureIndex+1
 if(fixture)globalThis.__fixtureControl=require('./fixture.cjs').control;
 if(fixture||fixtureNative)app.setPath('userData',path.join(app.getPath('temp'),'HidHide-Editor-Fixture-'+process.pid));
 const native=app.isPackaged?path.resolve(path.dirname(process.execPath),'..','HidHideClient.exe'):path.resolve(__dirname,'../../bin/Release/x64/HidHideClient.exe');
+const discovery=require('./application-discovery.cjs').createApplicationDiscovery(native);
+const fixtureDiscoveryNative=fixture&&process.argv.includes('--fixture-discovery-native');
+const discover=(command,selection)=>fixture&&!fixtureDiscoveryNative?require('./fixture.cjs').discover(command,selection):discovery.run(command,selection);
 const commands=new Set(['snapshot','apply','settings','delete','retry','launch','backup','restore','import','export','new','adopt','abandon-adoption']);
 function finishOperation(){inFlight--;if(!inFlight&&closeWhenIdle){closeWhenIdle=false;closing=true;window.close();}}
 function validSender(event){if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||!event.senderFrame.url.startsWith(origin+'/'))throw Error('Untrusted editor request.');}
@@ -109,6 +112,10 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   ipcMain.handle('editor:theme',async(event,value)=>{validSender(event);inFlight++;try{const theme=await appearance.set(value);nativeTheme.themeSource=theme;window.setBackgroundColor(theme==='light'?'#f5f5f5':'#121212');return theme;}finally{finishOperation();}});
   ipcMain.handle('editor:request',(event,value)=>{validSender(event);return request(value).catch(error=>({ok:false,error:error.message}));});
   ipcMain.handle('editor:visibility',event=>{validSender(event);return window.isVisible()&&!window.isMinimized();});
+  ipcMain.handle('editor:applications-list',async event=>{validSender(event);return await discover('list');});
+  ipcMain.handle('editor:application-describe',async(event,filePath)=>{validSender(event);return (await discover('describe',{path:filePath})).application;});
+  ipcMain.handle('editor:application-validate',async(event,selection)=>{validSender(event);return (await discover(selection?.pid===0?'validate-file':'validate',selection)).application;});
+  ipcMain.on('editor:applications-cancel',event=>{validSender(event);discovery.cancel();});
   ipcMain.handle('editor:icon',(event,filePath)=>{validSender(event);return loadAppIcon(filePath);});
   ipcMain.handle('editor:pick',async(event,kind)=>{
    validSender(event);if(fixture)return require('./fixture.cjs').pick(kind);
@@ -125,4 +132,4 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
 }
 function startEngine(){const child=spawn(native,['--background'],{detached:true,windowsHide:true,stdio:'ignore'});child.on('error',()=>{});child.unref();}
 app.on('window-all-closed',()=>app.quit());
-app.on('before-quit',stopBridge);
+app.on('before-quit',()=>{discovery.cancel();stopBridge();});

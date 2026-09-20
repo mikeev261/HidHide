@@ -370,6 +370,7 @@
     <ClInclude Include="src\ProfilesCoordinator.h" />
     <ClInclude Include="src\ProfilesEnforcementAdapter.h" />
     <ClInclude Include="src\EditorService.h" />
+    <ClInclude Include="src\ApplicationDiscovery.h" />
     <ClInclude Include="src\ProfilesPage.h" />
     <ClInclude Include="src\ProfilesView.h" />
     <ClInclude Include="src\ProfileProcessMatch.h" />
@@ -391,6 +392,7 @@
     <ClCompile Include="src\HidHideClient.cpp" />
     <ClCompile Include="src\HidHideClientDlg.cpp" />
     <ClCompile Include="src\EditorService.cpp" />
+    <ClCompile Include="src\ApplicationDiscovery.cpp" />
     <ClCompile Include="src\ProfilesCoordinator.cpp" />
     <ClCompile Include="src\ProfilesEnforcementAdapter.cpp" />
     <ClCompile Include="src\ProfilesPage.cpp" />

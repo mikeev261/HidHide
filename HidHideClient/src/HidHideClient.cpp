@@ -12,6 +12,7 @@
 #include "ProfileRepository.h"
 #include "ProfileRecovery.h"
 #include "EditorService.h"
+#include "ApplicationDiscovery.h"
 #include <future>
 
 CHidHideClientApp theApp;
@@ -883,6 +884,7 @@ BOOL CHidHideClientApp::InitInstance()
 
     // The editor bridge serves one or more requests with no driver or profile
     // ownership. Run before OLE, the dialog, startup integration, or any lease.
+    if (HidHide::Applications::RunHelper()) return FALSE;
     if (HidHide::Editor::RunRequestBridge()) return FALSE;
 
     // Initialize OLE library

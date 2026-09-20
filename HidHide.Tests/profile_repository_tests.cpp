@@ -4,11 +4,8 @@
 #include "ProfileApplicationService.h"
 #include "ProfileRecovery.h"
 #include "FilterDriverProxy.h"
-#include "../HidHideClient/resource.h"
 #include <future>
 #include <iostream>
-#include <oleacc.h>
-#pragma comment(lib, "oleacc.lib")
 
 using namespace HidHide::Profiles;
 
@@ -179,12 +176,7 @@ namespace
         }, reinterpret_cast<LPARAM>(&state));
         return state.window;
     }
-    std::wstring AccessibleName(HWND window)
-    {
-        IAccessible* accessible{}; if (FAILED(::AccessibleObjectFromWindow(window, static_cast<DWORD>(OBJID_CLIENT), IID_IAccessible, reinterpret_cast<void**>(&accessible)))) return {};
-        VARIANT self{}; self.vt = VT_I4; self.lVal = CHILDID_SELF; BSTR value{}; auto result = accessible->get_accName(self, &value); accessible->Release();
-        if (FAILED(result) || !value) return {}; std::wstring name(value, ::SysStringLen(value)); ::SysFreeString(value); return name;
-    }
+
 }
 
 TEST(ProfilePolicy, WinnerPriorityStableTieExitFallbackManualAndPause)
@@ -520,6 +512,22 @@ TEST(ProfileRepository, CreateUpdateDeleteRecoverAsCompleteOldOrNewAtEveryBounda
     }
 }
 
+TEST(ProfileAcceptance, CurrentEditorServiceContractsRunWithoutAProfileWindow)
+{
+    TempDirectory temp; temp.path = temp.path.parent_path() / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
+    auto executable = ClientExecutable();
+    auto line = L"\"" + executable.native() + L"\" --profiles-editor-self-test \"" + temp.path.native() + L"\"";
+    STARTUPINFOW startup{sizeof(startup)}; ChildProcess child;
+    ASSERT_TRUE(::CreateProcessW(executable.c_str(), line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+        nullptr, executable.parent_path().c_str(), &startup, &child.process));
+    child.WaitAndVerifyExit();
+    auto report = temp.path / L"editor-self-test.txt";
+    ASSERT_TRUE(std::filesystem::exists(report));
+    auto results = ReadBytes(report);
+    EXPECT_NE(std::string::npos, results.find("ALL PASSED")) << results;
+    EXPECT_EQ(std::string::npos, results.find("FAILED:")) << results;
+}
+
 TEST(ProfileAcceptance, ProfileApplySurvivesFullRestart)
 {
     TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
@@ -532,7 +540,7 @@ TEST(ProfileAcceptance, ProfileApplySurvivesFullRestart)
     ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000)); EXPECT_EQ(beforeDraft, RepositoryBytes(temp.path));
     ASSERT_TRUE(::ResetEvent(completed)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000));
     ASSERT_TRUE(::ResetEvent(ready)); ASSERT_TRUE(::SetEvent(command)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
-    ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 0)) << "production UI Apply path did not report semantic success";
+    ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 0)) << "production service Apply path did not report semantic success";
     std::filesystem::path profilePath; IndependentProfileDocument independent;
     for (auto const& entry : std::filesystem::directory_iterator(temp.path))
     {
@@ -556,7 +564,7 @@ TEST(ProfileAcceptance, ProfileApplySurvivesFullRestart)
     std::cout << "Profile Apply Survives Full Restart: PASS\n";
 }
 
-TEST(ProfileAcceptance, InvalidSettingsOpensRecoveryUiWithoutEnforcementOrRepositoryWrites)
+TEST(ProfileAcceptance, InvalidSettingsBlocksServiceWithoutEnforcementOrRepositoryWrites)
 {
     TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
     ProfileRepository repository(temp.path); repository.OpenOrCreate(); auto settings = temp.path / L"settings.json";
@@ -568,6 +576,7 @@ TEST(ProfileAcceptance, InvalidSettingsOpensRecoveryUiWithoutEnforcementOrReposi
     HANDLE completed = ::CreateEventW(nullptr, TRUE, FALSE, completedName.c_str()); ASSERT_TRUE(ready && command && completed);
     auto worker = StartRestartWorker(L"invalid", temp.path, readyName, commandName, completedName);
     ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
+    EXPECT_EQ(nullptr, FindProcessWindow(worker.process.dwProcessId));
     EXPECT_EQ(before, RepositoryBytes(temp.path)); ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); EXPECT_EQ(before, RepositoryBytes(temp.path));
     ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
 }
@@ -588,7 +597,7 @@ TEST(ProfileAcceptance, UnknownFreshObservationCreatesNoAuthoritativeCatalog)
     }
 }
 
-TEST(ProfileAcceptance, HardRecoveryFailuresOpenBlockedUiAndPreserveAllEvidence)
+TEST(ProfileAcceptance, HardRecoveryFailuresBlockServiceAndPreserveAllEvidence)
 {
     for (int scenario : { 0, 1, 2 })
     {
@@ -621,7 +630,7 @@ TEST(ProfileAcceptance, HardRecoveryFailuresOpenBlockedUiAndPreserveAllEvidence)
     }
 }
 
-TEST(ProfileAcceptance, AutomaticDeviceMinimizeDraftFailureAndShutdownWriteNoJson)
+TEST(ProfileAcceptance, AutomaticSnapshotDraftFailureAndShutdownWriteNoJson)
 {
     TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
     ProfileRepository repository(temp.path); repository.OpenOrCreate(); auto before = RepositoryBytes(temp.path); auto token = NewStableId();
@@ -659,97 +668,7 @@ TEST(ProfileAcceptance, ValidatedRestoreImmediatelyClearsRepositoryBlockAndAppli
     std::error_code ignored; std::filesystem::remove_all(backup, ignored);
 }
 
-TEST(ProfileAcceptance, DirtyPromptApplyDiscardCancelUsesRealNativeCommands)
-{
-    TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
-    auto token = NewStableId(); auto readyName = L"Local\\HidHide.Prompts.Ready." + token; auto commandName = L"Local\\HidHide.Prompts.Command." + token;
-    auto completedName = L"Local\\HidHide.Prompts.Completed." + token; HANDLE ready = ::CreateEventW(nullptr, TRUE, FALSE, readyName.c_str());
-    HANDLE command = ::CreateEventW(nullptr, TRUE, FALSE, commandName.c_str()); HANDLE completed = ::CreateEventW(nullptr, TRUE, FALSE, completedName.c_str()); ASSERT_TRUE(ready && command && completed);
-    auto worker = StartRestartWorker(L"prompts", temp.path, readyName, commandName, completedName);
-    ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
-    auto repository = ProfileRepository(temp.path); auto loaded = repository.Load(); auto id = loaded.snapshot.settings.selectedGlobalId;
-    EXPECT_EQ(L"Applied by prompt", loaded.snapshot.profiles.at(id).name); EXPECT_EQ(2u, loaded.snapshot.profiles.at(id).revision);
-    ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
-}
-
-TEST(ProfileAcceptance, ExternalAccessibilityTabOrderAndResizeUseRealNativeWindow)
-{
-    auto com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); ASSERT_TRUE(SUCCEEDED(com) || com == RPC_E_CHANGED_MODE);
-    TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
-    auto token = NewStableId(); auto readyName = L"Local\\HidHide.Accessibility.Ready." + token; auto commandName = L"Local\\HidHide.Accessibility.Command." + token;
-    auto completedName = L"Local\\HidHide.Accessibility.Completed." + token; HANDLE ready = ::CreateEventW(nullptr, TRUE, FALSE, readyName.c_str());
-    HANDLE command = ::CreateEventW(nullptr, TRUE, FALSE, commandName.c_str()); HANDLE completed = ::CreateEventW(nullptr, TRUE, FALSE, completedName.c_str()); ASSERT_TRUE(ready && command && completed);
-    auto worker = StartRestartWorker(L"accessibility", temp.path, readyName, commandName, completedName);
-    ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
-    auto main = FindProcessWindow(worker.process.dwProcessId); ASSERT_TRUE(main); std::map<int, HWND> controls;
-    ::EnumChildWindows(main, [](HWND window, LPARAM parameter)
-    { auto id = ::GetDlgCtrlID(window); if (id > 0) (*reinterpret_cast<std::map<int, HWND>*>(parameter))[id] = window; return TRUE; }, reinterpret_cast<LPARAM>(&controls));
-    for (auto const& [id, name] : std::vector<std::pair<int, std::wstring>>{ { IDC_PROFILE_MODE, L"Profile selection mode" },
-        { IDC_PROFILE_GLOBAL, L"Selected Global fallback" }, { IDC_PROFILE_SEARCH, L"Search profiles" }, { IDC_PROFILE_NAME, L"Profile name" },
-        { IDC_PROFILE_LIST, L"Saved profiles" }, { IDC_PROFILE_PRIORITY, L"Application profile priority from minus 100000 to 100000" },
-        { IDC_PROFILE_DEVICES, L"Profile device visibility rules" }, { IDC_PROFILE_HIDDEN, L"After Apply Hidden" },
-        { IDC_PROFILE_VISIBLE, L"After Apply Visible" }, { IDC_PROFILE_PATH, L"Exact application executable path" },
-        { IDC_PROFILE_IDENTITY, L"Exact expanded device policy identities" }, { IDC_PROFILE_RESULT, L"Save and activation status" },
-        { IDC_PROFILE_RETRY, L"Retry activation without saving" } })
-    {
-        ASSERT_TRUE(controls.count(id)) << id; EXPECT_EQ(name, AccessibleName(controls.at(id))) << id;
-    }
-    ASSERT_TRUE(controls.count(IDC_PROFILE_APPLY)); EXPECT_FALSE(::IsWindowEnabled(controls.at(IDC_PROFILE_APPLY)));
-    auto page = ::GetParent(controls.at(IDC_PROFILE_LIST)); ASSERT_TRUE(page); std::set<int> tabIds; HWND tab{};
-    for (int count{}; count < 40; ++count) { tab = ::GetNextDlgTabItem(page, tab, FALSE); if (!tab || !tabIds.emplace(::GetDlgCtrlID(tab)).second) break; }
-    for (auto id : { IDC_PROFILE_AUTOMATIC, IDC_PROFILE_GLOBAL, IDC_PROFILE_SEARCH, IDC_PROFILE_LIST,
-        IDC_PROFILE_MENU, IDC_PROFILE_ADD_REMEMBERED }) EXPECT_TRUE(tabIds.count(id)) << id;
-    for(auto id:{IDC_PROFILE_NAME,IDC_PROFILE_PATH,IDC_PROFILE_DEVICES,IDC_PROFILE_IDENTITY,IDC_PROFILE_PRIORITY})
-        EXPECT_FALSE(::IsWindowVisible(controls.at(id))) << id;
-    EXPECT_EQ(BS_AUTORADIOBUTTON,::GetWindowLongPtrW(controls.at(IDC_PROFILE_AUTOMATIC),GWL_STYLE)&BS_TYPEMASK);
-    EXPECT_EQ(BS_AUTORADIOBUTTON,::GetWindowLongPtrW(controls.at(IDC_PROFILE_USE_GLOBAL),GWL_STYLE)&BS_TYPEMASK);
-    EXPECT_FALSE(::IsWindowEnabled(controls.at(IDC_PROFILE_RETRY)));
-    for (auto id : { IDC_PROFILE_PRIORITY, IDC_PROFILE_VISIBLE, IDC_PROFILE_RETRY, IDC_PROFILE_APPLY })
-        EXPECT_NE(0, ::GetWindowLongPtrW(controls.at(id), GWL_STYLE) & WS_TABSTOP) << id;
-    EXPECT_NE(0, ::GetWindowLongPtrW(controls.at(IDC_PROFILE_HIDDEN), GWL_STYLE) & WS_GROUP);
-    EXPECT_EQ(BS_AUTORADIOBUTTON, ::GetWindowLongPtrW(controls.at(IDC_PROFILE_HIDDEN), GWL_STYLE) & BS_TYPEMASK);
-    EXPECT_EQ(BS_AUTORADIOBUTTON, ::GetWindowLongPtrW(controls.at(IDC_PROFILE_VISIBLE), GWL_STYLE) & BS_TYPEMASK);
-    RECT before{}, mainBefore{}, after{}; ASSERT_TRUE(::GetWindowRect(page, &before)); ASSERT_TRUE(::GetWindowRect(main, &mainBefore));
-    ASSERT_TRUE(::SetWindowPos(main, nullptr, 0, 0, mainBefore.right - mainBefore.left + 400, mainBefore.bottom - mainBefore.top + 300, SWP_NOMOVE | SWP_NOZORDER)); ::Sleep(100);
-    ASSERT_TRUE(::GetWindowRect(page, &after)); EXPECT_GT(after.right - after.left, before.right - before.left); EXPECT_GT(after.bottom - after.top, before.bottom - before.top);
-    for (auto id : { IDC_PROFILE_DEVICES, IDC_PROFILE_IDENTITY, IDC_PROFILE_DISCARD, IDC_PROFILE_APPLY })
-    {
-        RECT control{}; ASSERT_TRUE(::GetWindowRect(controls.at(id), &control)); EXPECT_GE(control.left, after.left); EXPECT_LE(control.right, after.right); EXPECT_GE(control.top, after.top); EXPECT_LE(control.bottom, after.bottom);
-    }
-    for (auto const& [id, expectedClass] : std::vector<std::pair<int, std::wstring>>{ { IDC_PROFILE_SEARCH, L"Edit" }, { IDC_PROFILE_NAME, L"Edit" },
-        { IDC_PROFILE_PATH, L"Edit" }, { IDC_PROFILE_IDENTITY, L"Edit" }, { IDC_PROFILE_LIST, L"ListBox" }, { IDC_PROFILE_DEVICES, L"SysListView32" },
-        { IDC_PROFILE_HIDDEN, L"Button" }, { IDC_PROFILE_VISIBLE, L"Button" }, { IDC_PROFILE_APPLY, L"Button" } })
-    {
-        wchar_t actual[64]{}; ASSERT_TRUE(::GetClassNameW(controls.at(id), actual, static_cast<int>(std::size(actual))));
-        EXPECT_EQ(0, _wcsicmp(expectedClass.c_str(), actual));
-        if (expectedClass == L"Button") EXPECT_NE(BS_OWNERDRAW, ::GetWindowLongPtrW(controls.at(id), GWL_STYLE) & BS_TYPEMASK);
-    }
-    auto dc = ::GetDC(page); ASSERT_TRUE(dc); auto editBrush = reinterpret_cast<HBRUSH>(::SendMessageW(page, WM_CTLCOLOREDIT,
-        reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(controls.at(IDC_PROFILE_NAME))));
-    auto dialogBrush = reinterpret_cast<HBRUSH>(::SendMessageW(page, WM_CTLCOLORDLG, reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(page)));
-    // Theme brushes are process-owned; their actual foreground/background colors
-    // are checked inside the presentation worker (GDI handles are process-local).
-    EXPECT_NE(nullptr, editBrush); EXPECT_NE(nullptr, dialogBrush);
-    ::ReleaseDC(page, dc); ::SendMessageW(page, WM_SYSCOLORCHANGE, 0, 0); ::SendMessageW(page, WM_THEMECHANGED, 0, 0);
-    // Stress the real native anchor layout at larger pixel geometries. This is
-    // resize evidence only; non-96-DPI and active high-contrast acceptance are
-    // intentionally reported as pending because this host is 96 DPI/normal.
-    for (auto dpi : { 120, 144, 192 })
-    {
-        auto width = ::MulDiv(mainBefore.right - mainBefore.left, dpi, 96);
-        auto height = ::MulDiv(mainBefore.bottom - mainBefore.top, dpi, 96);
-        ASSERT_TRUE(::SetWindowPos(main, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER)); ::Sleep(50);
-        RECT scaledPage{}; ASSERT_TRUE(::GetWindowRect(page, &scaledPage));
-        for (auto id : { IDC_PROFILE_DEVICES, IDC_PROFILE_IDENTITY, IDC_PROFILE_RETRY, IDC_PROFILE_DISCARD, IDC_PROFILE_APPLY })
-        {
-            RECT control{}; ASSERT_TRUE(::GetWindowRect(controls.at(id), &control)); EXPECT_GE(control.left, scaledPage.left); EXPECT_LE(control.right, scaledPage.right);
-            EXPECT_GE(control.top, scaledPage.top); EXPECT_LE(control.bottom, scaledPage.bottom);
-        }
-    }
-    ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed); if (SUCCEEDED(com)) ::CoUninitialize();
-}
-
-TEST(ProfileAcceptance, SavedButEnforcementFailedUsesTruthfulUiWording)
+TEST(ProfileAcceptance, SavedButEnforcementFailedRemainsDistinctInService)
 {
     TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
     auto token = NewStableId(); auto readyName = L"Local\\HidHide.EnforcementFailure.Ready." + token; auto commandName = L"Local\\HidHide.EnforcementFailure.Command." + token;
@@ -758,39 +677,6 @@ TEST(ProfileAcceptance, SavedButEnforcementFailedUsesTruthfulUiWording)
     auto worker = StartRestartWorker(L"enforcement-failure", temp.path, readyName, commandName, completedName);
     ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
     ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
-}
-
-TEST(ProfileAcceptance, MinimizedRepositoryChangeRefreshesPresentationOnRestore)
-{
-    TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
-    auto token = NewStableId(); auto readyName = L"Local\\HidHide.HiddenRefresh.Ready." + token; auto commandName = L"Local\\HidHide.HiddenRefresh.Command." + token;
-    auto completedName = L"Local\\HidHide.HiddenRefresh.Completed." + token; HANDLE ready = ::CreateEventW(nullptr, TRUE, FALSE, readyName.c_str());
-    HANDLE command = ::CreateEventW(nullptr, TRUE, FALSE, commandName.c_str()); HANDLE completed = ::CreateEventW(nullptr, TRUE, FALSE, completedName.c_str()); ASSERT_TRUE(ready && command && completed);
-    auto worker = StartRestartWorker(L"hidden-refresh", temp.path, readyName, commandName, completedName);
-    ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(ready, 10000)); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
-    EXPECT_EQ(L"Changed while minimized", ProfileRepository(temp.path).Load().snapshot.profiles.begin()->second.name);
-    ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
-}
-
-TEST(ProfileAcceptance, IsolatedPerformanceModesUseRealProductionProcessWithoutDriver)
-{
-    for (auto phase : { L"perf-empty", L"perf-twenty", L"perf-one-match", L"perf-competing", L"perf-churn",
-        L"perf-reconnect", L"perf-editor", L"perf-minimized", L"perf-tray" })
-    {
-        SCOPED_TRACE(phase); TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
-        auto token = NewStableId(); auto readyName = L"Local\\HidHide.PerformanceSmoke.Ready." + token; auto commandName = L"Local\\HidHide.PerformanceSmoke.Command." + token;
-        auto completedName = L"Local\\HidHide.PerformanceSmoke.Completed." + token; HANDLE ready = ::CreateEventW(nullptr, TRUE, FALSE, readyName.c_str());
-        HANDLE command = ::CreateEventW(nullptr, TRUE, FALSE, commandName.c_str()); HANDLE completed = ::CreateEventW(nullptr, TRUE, FALSE, completedName.c_str()); ASSERT_TRUE(ready && command && completed);
-        auto worker = StartRestartWorker(phase, temp.path, readyName, commandName, completedName);
-        HANDLE initial[]{ ready, completed }; auto first = ::WaitForMultipleObjects(2, initial, FALSE, 10000);
-        if (first == WAIT_OBJECT_0 + 1)
-        {
-            auto diagnostic = temp.path / L".acceptance-error.txt";
-            FAIL() << (std::filesystem::exists(diagnostic) ? ReadBytes(diagnostic) : "acceptance worker failed without diagnostics");
-        }
-        ASSERT_EQ(WAIT_OBJECT_0, first); ASSERT_EQ(WAIT_OBJECT_0, ::WaitForSingleObject(completed, 10000));
-        ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
-    }
 }
 
 TEST(ProfileAcceptance, DeviceNotificationBurstUsesBoundedProductionCoalescer)
@@ -804,7 +690,7 @@ TEST(ProfileAcceptance, DeviceNotificationBurstUsesBoundedProductionCoalescer)
     ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
 }
 
-TEST(ProfileAcceptance, KnownConflictRendersObservedStateButReadFailureRendersUnknown)
+TEST(ProfileAcceptance, KnownConflictAndUnknownReadbackRemainDistinctInService)
 {
     for (auto phase : { L"verified-observation", L"known-observation", L"known-observation-allowed-change", L"unknown-observation" })
     {
@@ -819,7 +705,7 @@ TEST(ProfileAcceptance, KnownConflictRendersObservedStateButReadFailureRendersUn
     }
 }
 
-TEST(ProfileAcceptance, LiveProcessNotificationsRefreshRowsWithoutReplacingDraft)
+TEST(ProfileAcceptance, LiveProcessSelectionUpdatesWithoutRepositoryWrites)
 {
     TempDirectory temp; temp.path = std::filesystem::path(temp.path.parent_path()) / (L"HidHide-Profiles-Restart-Test-" + NewStableId());
     auto token = NewStableId(); auto readyName = L"Local\\HidHide.LiveStatus.Ready." + token; auto commandName = L"Local\\HidHide.LiveStatus.Command." + token;
@@ -830,7 +716,7 @@ TEST(ProfileAcceptance, LiveProcessNotificationsRefreshRowsWithoutReplacingDraft
     ASSERT_TRUE(::SetEvent(command)); worker.WaitAndVerifyExit(); ::CloseHandle(ready); ::CloseHandle(command); ::CloseHandle(completed);
 }
 
-TEST(ProfileAcceptance, AdoptionBoundaryRetryAndGlobalStatusUseRealWindow)
+TEST(ProfileAcceptance, AdoptionBoundaryRetryAndGlobalStatusUseCurrentService)
 {
     for (auto phase : { L"adoption-race", L"adoption-retry", L"global-status" })
     {
@@ -850,7 +736,7 @@ TEST(ProfileAcceptance, AdoptionBoundaryRetryAndGlobalStatusUseRealWindow)
     }
 }
 
-TEST(ProfileAcceptance, ChangedAdoptionAndObservedStatePropagationUseRealWindow)
+TEST(ProfileAcceptance, ChangedAdoptionAndObservedStateUseCurrentService)
 {
     for (auto phase : { L"adoption-changed-lifecycle", L"device-conflict-propagation", L"selection-unknown-propagation" })
     {
@@ -1127,32 +1013,14 @@ template <typename T> struct ExposesLegacyProfileMutation<T, std::void_t<
 static_assert(!ExposesLegacyProfileMutation<HidHide::FilterDriverProxy>::value,
     "Ordinary UI/CLI code must not expose a ConfigurationV1 profile writer");
 
-TEST(ProfileAcceptance, ConceptPresentationLayoutUnicodeInlineCommandsAndDraftPersistence)
-{
-    for(auto phase:{L"presentation-dirty-100",L"presentation-clean-100",L"presentation-minimum-100",L"presentation-minimum-125",L"presentation-dirty-150",L"presentation-minimum-150",L"presentation-minimum-200",
-        L"presentation-dirty-dark-100",L"presentation-clean-dark-100",L"presentation-minimum-dark-125",L"presentation-dirty-dark-150",L"presentation-minimum-dark-200"})
-    {
-        SCOPED_TRACE(phase);TempDirectory temp;temp.path=temp.path.parent_path()/(L"HidHide-Profiles-Restart-Test-"+NewStableId());
-        auto token=NewStableId();auto readyName=L"Local\\HidHide.Presentation.Ready."+token,commandName=L"Local\\HidHide.Presentation.Command."+token,completedName=L"Local\\HidHide.Presentation.Completed."+token;
-        HANDLE ready=::CreateEventW(nullptr,TRUE,FALSE,readyName.c_str()),command=::CreateEventW(nullptr,TRUE,FALSE,commandName.c_str()),completed=::CreateEventW(nullptr,TRUE,FALSE,completedName.c_str());ASSERT_TRUE(ready&&command&&completed);
-        auto worker=StartRestartWorker(phase,temp.path,readyName,commandName,completedName);
-        if(::WaitForSingleObject(ready,10000)!=WAIT_OBJECT_0){auto diagnostic=temp.path/L".acceptance-error.txt";FAIL()<<(std::filesystem::exists(diagnostic)?ReadBytes(diagnostic):"presentation worker failed");}
-        ASSERT_EQ(WAIT_OBJECT_0,::WaitForSingleObject(completed,10000));
-        auto loaded=ProfileRepository(temp.path).Load();ASSERT_EQ(5u,loaded.snapshot.profiles.size());
-        auto f1=std::find_if(loaded.snapshot.profiles.begin(),loaded.snapshot.profiles.end(),[](auto const& item){return item.second.name==L"F1 25";});ASSERT_NE(loaded.snapshot.profiles.end(),f1);
-        auto pedal=std::find_if(f1->second.rules.begin(),f1->second.rules.end(),[](auto const& rule){return rule.identity==L"HID\\CONCEPT_PEDALS";});ASSERT_NE(f1->second.rules.end(),pedal);EXPECT_EQ(Visibility::Visible,pedal->visibility);
-        ASSERT_TRUE(::SetEvent(command));worker.WaitAndVerifyExit();::CloseHandle(ready);::CloseHandle(command);::CloseHandle(completed);
-    }
-}
-
-TEST(ProfilePresentation, NoPeriodicPresentationWorkAndExplicitUnicodeBuildContract)
+TEST(ProfilePresentation, ResidentEngineHasNoRetiredPageAndUsesUnicode)
 {
     auto root=std::filesystem::path(__FILE__).parent_path().parent_path();
-    for(auto relative:{L"HidHideClient/src/ProfilesPage.cpp",L"HidHideClient/src/ProfilesView.cpp"})
+    for(auto relative:{L"HidHideClient/src/HidHideClientDlg.cpp"})
     {
         auto text=ReadBytes(root/relative);EXPECT_EQ(std::string::npos,text.find("SetTimer("));EXPECT_EQ(std::string::npos,text.find("ON_WM_TIMER("));
     }
-    auto project=ReadBytes(root/L"HidHideClient/HidHideClient.vcxproj");EXPECT_NE(std::string::npos,project.find("/utf-8"));
+    auto project=ReadBytes(root/L"HidHideClient/HidHideClient.vcxproj");EXPECT_EQ(std::string::npos,project.find("ProfilesPage"));EXPECT_EQ(std::string::npos,project.find("ProfilesView"));EXPECT_NE(std::string::npos,project.find("/utf-8"));
     auto resource=ReadBytes(root/L"HidHideClient/HidHideClient.rc");EXPECT_NE(std::string::npos,resource.find("#pragma code_page(65001)"));EXPECT_EQ(std::string::npos,resource.find("#pragma code_page(1252)"));
     auto manifest=ReadBytes(root/L"HidHideClient/Profiles.manifest");EXPECT_NE(std::string::npos,manifest.find("PerMonitorV2"));
 }

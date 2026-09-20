@@ -132,8 +132,8 @@ try{
  await page.getByLabel('Find a profile').fill('');
  passed.push('long Unicode names, many rows and no-match search');
  await control({reset:true});await page.waitForTimeout(2000);
- await page.getByRole('button',{name:'New profile',exact:true}).click();await page.getByLabel('Profile name').fill('New fixture game');
- await page.getByRole('button',{name:'Choose application',exact:true}).click();await expect(page.getByRole('heading',{name:'New fixture game',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'New profile',exact:true}).click();await page.getByRole('button',{name:'Browse for EXE',exact:true}).click();await page.getByLabel('Profile name').fill('New fixture game');
+ await page.getByRole('button',{name:'Create draft',exact:true}).click();await expect(page.getByRole('heading',{name:'New fixture game',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Close editor',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();
  await page.getByRole('button',{name:'Keep editing',exact:true}).click();
  await control({fail:'Injected save failure: draft must survive.'});await page.getByRole('button',{name:'Apply changes',exact:true}).click();

@@ -9,6 +9,7 @@
     "start": "electron .",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:ui": "node tests/acceptance.mjs",
+    "test:applications": "node tests/application-picker.mjs && node tests/application-discovery-native.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {

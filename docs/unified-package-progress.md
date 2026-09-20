@@ -1,5 +1,19 @@
 # Unified package progress
 
+## Application selection during profile creation — 2026-09-20
+
+New application profiles choose an EXE before naming, through Browse or a searchable
+running-application list with explicit refresh, instance grouping, full paths and
+unavailable-process diagnostics. A localized metadata/directory/filename suggestion
+remains editable; manual names and detached drafts survive asynchronous discovery.
+Only Apply persists the existing profile fields. Global creation is unchanged.
+
+Discovery uses an ordinary-user read-only native helper that exits before coordinator
+ownership/driver startup. PID, process lifetime and path are revalidated; discovery
+and metadata do not enter the configuration queue or automatic matching scan.
+See [application-picker.md](application-picker.md) for bounds and regression fixtures.
+No host install, live profile change, or physical-controller acceptance is claimed.
+
 ## Direct application launch ordering — 2026-09-20
 
 The editor now offers **Launch with profile** for a saved enabled application

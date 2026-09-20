@@ -12,6 +12,7 @@
 #include "ProfileRepository.h"
 #include "ProfileRecovery.h"
 #include "EditorService.h"
+#include "ApplicationDiscovery.h"
 #include <future>
 
 CHidHideClientApp theApp;
@@ -57,23 +58,16 @@ namespace
     class AcceptanceDevices final : public IProfilesDeviceSource
     {
     public:
-        bool presentation{};
         std::vector<ProfilesDeviceItem> Enumerate() override
         {
-            if(presentation)return {
-                {L"HID\\CONCEPT_WHEEL",L"Thrustmaster T300RS — Wheel and buttons",true},
-                {L"HID\\CONCEPT_PEDALS",L"Heusinkveld Sprint — Pedals",true},
-                {L"HID\\CONCEPT_VJOY",L"vJoy Device — Virtual controller",true}};
             return { { L"HID\\VID_1234&PID_0001\\CONNECTED", L"Connected wheel — individual HID interface", m_Connected.load() },
                 { L"HID\\VID_1234&PID_0002\\REMEMBERED", L"Disconnected pedals — individual HID interface", false } };
         }
-        void Refresh() override { ++m_Refreshes; if (m_ToggleOnRefresh) m_Connected = !m_Connected.load(); }
+        void Refresh() override { ++m_Refreshes; }
         std::uint64_t RefreshCount() const override { return m_Refreshes.load(); }
-        void ToggleOnRefresh(bool value) noexcept { m_ToggleOnRefresh = value; }
     private:
         std::atomic_bool m_Connected{ true };
         std::atomic_uint64_t m_Refreshes{};
-        bool m_ToggleOnRefresh{};
     };
 
     bool IsIsolatedRestartRoot(std::filesystem::path const& root)
@@ -437,353 +431,209 @@ namespace
         return true;
     }
 
+    // Cross-process acceptance exercises the current editor service without constructing
+    // retired profile controls. Only the device-coalescer phase needs a hidden HWND.
     bool RunProfileRestartWorker()
     {
-        if (__argc != 7 || _wcsicmp(__wargv[1], L"--profile-restart-test") != 0) return false;
+        if (__argc < 2 || _wcsicmp(__wargv[1], L"--profile-restart-test") != 0) return false;
+        if (__argc != 7) return true; // Never fall through to the installed driver.
         std::filesystem::path root(__wargv[3]); if (!IsIsolatedRestartRoot(root)) return true;
-        HANDLE ready = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, __wargv[4]); HANDLE command = ::OpenEventW(SYNCHRONIZE, FALSE, __wargv[5]); HANDLE completed = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, __wargv[6]);
-        if (!ready || !command || !completed) { if (ready) ::CloseHandle(ready); if (command) ::CloseHandle(command); if (completed) ::CloseHandle(completed); return true; }
+        HANDLE ready = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, __wargv[4]);
+        HANDLE command = ::OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, __wargv[5]);
+        HANDLE completed = ::OpenEventW(EVENT_MODIFY_STATE, FALSE, __wargv[6]);
+        if (!ready || !command || !completed)
+        { if (ready) ::CloseHandle(ready); if (command) ::CloseHandle(command); if (completed) ::CloseHandle(completed); return true; }
         try
         {
-            if (_wcsicmp(__wargv[2], L"hold") == 0)
+            using namespace HidHide::Profiles; using namespace HidHide::Profiles::Json;
+            auto require = [](bool condition, char const* message) { if (!condition) throw std::runtime_error(message); };
+            auto awaitCommand = [&] { require(::WaitForSingleObject(command, 10000) == WAIT_OBJECT_0, "acceptance command timed out"); ::ResetEvent(command); };
+            auto finish = [&]
             {
+                bool visible{};
+                ::EnumWindows([](HWND window, LPARAM context)
                 {
-                    HidHide::Profiles::WriterLease lease(root); ::SetEvent(ready);
-                    if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("lease release command was not received");
-                }
+                    DWORD owner{}; ::GetWindowThreadProcessId(window, &owner);
+                    if (owner == ::GetCurrentProcessId() && ::IsWindowVisible(window)) *reinterpret_cast<bool*>(context) = true;
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(&visible));
+                require(!visible, "headless acceptance opened a visible window");
+                ::SetEvent(ready); ::SetEvent(completed); awaitCommand();
+            };
+            auto phase = std::wstring(__wargv[2]);
+            if (phase == L"hold")
+            {
+                { WriterLease lease(root); ::SetEvent(ready); awaitCommand(); }
                 ::SetEvent(completed); ::Sleep(INFINITE);
             }
-
-            AcceptanceEnforcement enforcement; AcceptanceDevices devices; auto phase = std::wstring(__wargv[2]);
-            bool presentationPhase=phase.rfind(L"presentation-",0)==0;
-            if(presentationPhase)
+            AcceptanceEnforcement enforcement; AcceptanceDevices devices;
+            if (phase == L"device-coalescing")
             {
-                devices.presentation=true;
-                HidHide::Profiles::ProfileRepository setup(root);auto loaded=setup.OpenOrCreate();auto global=loaded.snapshot.profiles.at(loaded.snapshot.settings.selectedGlobalId);
-                global.name=L"Everyday gaming";setup.Apply(global,setup.Version(global.id));
-                HidHide::Profiles::Profile second;second.id=HidHide::Profiles::NewStableId();second.name=L"Sim rig only";second.kind=HidHide::Profiles::Kind::Global;setup.Apply(second,std::nullopt);
-                int priority=100;
-                for(auto name:{L"F1 25",L"Le Mans Ultimate",L"Assetto Corsa"})
-                {
-                    HidHide::Profiles::Profile profile;profile.id=HidHide::Profiles::NewStableId();profile.name=name;profile.kind=HidHide::Profiles::Kind::Application;profile.priority=priority--;profile.enabled=true;
-                    profile.executable=HidHide::Profiles::NormalizeExecutable(root/(profile.name==L"F1 25"?L"F1_25.exe":profile.name+L".exe"));
-                    {std::ofstream file(profile.executable);file<<"presentation fixture only";}
-                    profile.rules={{L"HID\\CONCEPT_WHEEL",L"Thrustmaster T300RS",HidHide::Profiles::Visibility::Hidden},
-                        {L"HID\\CONCEPT_PEDALS",L"Heusinkveld Sprint",HidHide::Profiles::Visibility::Visible},
-                        {L"HID\\CONCEPT_XBOX",L"Xbox Wireless Controller",HidHide::Profiles::Visibility::Hidden}};
-                    setup.Apply(profile,std::nullopt);
-                }
+                ProfilesAcceptanceContext context{root, enforcement, devices, [] { return std::vector<ProcessObservation>{}; }};
+                CHidHideClientDlg dialog(nullptr, context);
+                require(dialog.Create(IDD_DIALOG_APPLICATION) != FALSE, "hidden engine window creation failed");
+                require(!dialog.IsWindowVisible(), "resident fixture unexpectedly became visible");
+                require(dialog.AcceptanceDeviceBurstCoalesced(), "device burst was not bounded and coalesced");
+                dialog.DestroyWindow(); finish();
             }
-            auto performancePhase = phase.rfind(L"perf-", 0) == 0; std::atomic_bool syntheticRunning{ phase != L"perf-churn" };
-            std::atomic_uint64_t processScans{}, matchingObservations{}, syntheticTransitions{}, deviceNotifications{};
-            std::vector<std::filesystem::path> syntheticExecutables;
-            if (performancePhase)
+            else
             {
-                HidHide::Profiles::ProfileRepository setup(root); auto loaded = setup.OpenOrCreate();
-                auto profileCount = phase == L"perf-empty" ? 0u : 20u;
-                for (unsigned index{}; index < profileCount; ++index)
+                if (phase == L"unknown-fresh") enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Unknown);
+                if (phase == L"conflict-fresh") enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict);
+                ProfileApplicationService application(root); auto initial = enforcement.Observe();
+                application.OpenOrCreateObserved(initial.success && initial.observedKnown && !initial.conflict
+                    ? std::optional<std::set<std::filesystem::path>>(initial.observed.allowedApplications) : std::nullopt);
+                std::atomic_int running{};
+                auto executable = NormalizeExecutable(root/L"F1_25.exe");
+                auto processSource = [&] { return running.load() ? std::vector<ProcessObservation>{{4242, 1, L"F1_25.exe", executable, true}} : std::vector<ProcessObservation>{}; };
+                auto startup = phase == L"startup-failure" ? CProfilesCoordinator::StartupIntegration([](bool) -> std::wstring { throw std::runtime_error("injected Run-key failure"); }) : CProfilesCoordinator::StartupIntegration{};
+                CProfilesCoordinator coordinator(enforcement, root, phase == L"startup-failure", processSource, startup,
+                    [phase] { if (phase == L"adapter") throw std::runtime_error("injected maintenance inspection failure"); return false; }, initial);
+                if (!coordinator.HasRepositoryDiagnostics()) coordinator.AcceptanceScanNow();
+                HidHide::Editor::Service service(application, coordinator, devices);
+                auto request = [&](std::string const& json, bool expectedOk = true)
                 {
-                    auto executablePath = HidHide::Profiles::NormalizeExecutable(root / (L"SyntheticGame" + std::to_wstring(index) + L".exe")); syntheticExecutables.push_back(executablePath);
-                    { std::ofstream executable(executablePath, std::ios::binary); executable << "isolated performance fixture"; }
-                    HidHide::Profiles::Profile profile; profile.id = HidHide::Profiles::NewStableId(); profile.name = L"Synthetic workload";
-                    profile.kind = HidHide::Profiles::Kind::Application; profile.enabled = true; profile.priority = static_cast<std::int32_t>(100 - index); profile.executable = executablePath;
-                    profile.rules.push_back({ L"HID\\VID_1234&PID_0001\\CONNECTED", L"Synthetic wheel", HidHide::Profiles::Visibility::Hidden });
-                    setup.Apply(std::move(profile), std::nullopt);
-                }
-            }
-            if (_wcsicmp(__wargv[2], L"conflict-fresh") == 0)
-                enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict);
-            if (_wcsicmp(__wargv[2], L"unknown-fresh") == 0)
-                enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Unknown);
-            std::atomic_bool failProcessScans{}; std::atomic_int liveProcessMode{};
-            if (phase == L"known-observation-allowed-change")
-            {
-                auto feeder = HidHide::Profiles::NormalizeExecutable(root / L"ObservedFeeder.exe");
-                { std::ofstream executable(feeder, std::ios::binary); executable << "representable observed feeder"; }
-            }
-            if (phase == L"live-status")
-            {
-                HidHide::Profiles::ProfileRepository setup(root); auto loaded = setup.OpenOrCreate();
-                for (auto const& item : std::vector<std::pair<std::wstring, std::int32_t>>{ { L"Status high", 100 }, { L"Status low", 10 } })
-                {
-                    auto executable = HidHide::Profiles::NormalizeExecutable(root / (item.first + L".exe"));
-                    { std::ofstream file(executable, std::ios::binary); file << "status fixture"; }
-                    HidHide::Profiles::Profile profile; profile.id = HidHide::Profiles::NewStableId(); profile.name = item.first;
-                    profile.kind = HidHide::Profiles::Kind::Application; profile.enabled = true; profile.priority = item.second; profile.executable = executable;
-                    setup.Apply(std::move(profile), std::nullopt);
-                }
-            }
-            if (phase == L"adoption-changed-lifecycle")
-            {
-                HidHide::Profiles::ProfileRepository setup(root); (void)setup.OpenOrCreate();
-                auto executable = HidHide::Profiles::NormalizeExecutable(root / L"NavigationTarget.exe");
-                { std::ofstream file(executable, std::ios::binary); file << "navigation fixture"; }
-                HidHide::Profiles::Profile profile; profile.id = HidHide::Profiles::NewStableId(); profile.name = L"Navigation target";
-                profile.kind = HidHide::Profiles::Kind::Application; profile.enabled = false; profile.executable = executable;
-                setup.Apply(std::move(profile), std::nullopt);
-            }
-            CProfilesCoordinator::ProcessSource processSource = [&]
-            {
-                if(presentationPhase){auto executable=HidHide::Profiles::NormalizeExecutable(root/L"F1_25.exe");return std::vector<HidHide::Profiles::ProcessObservation>{{4242,1,executable.filename().native(),executable,true}};}
-                if (failProcessScans) throw std::runtime_error("injected process discovery failure");
-                ++processScans;
-                if (phase == L"repository-domain")
-                {
-                    auto executable = HidHide::Profiles::NormalizeExecutable(root / L"F1_25.exe");
-                    if (std::filesystem::exists(executable)) return std::vector<HidHide::Profiles::ProcessObservation>{ { 4244, 4, executable.filename().native(), executable, true } };
-                }
-                if (phase == L"live-status")
-                {
-                    auto observation = [&](DWORD pid, std::wstring const& name)
-                    {
-                        auto executable = HidHide::Profiles::NormalizeExecutable(root / (name + L".exe"));
-                        return HidHide::Profiles::ProcessObservation{ pid, pid, executable.filename().native(), executable, true };
-                    };
-                    std::vector<HidHide::Profiles::ProcessObservation> result;
-                    auto mode = liveProcessMode.load();
-                    if (mode == 1 || mode == 2) result.push_back(observation(5101, L"Status high"));
-                    if (mode == 2 || mode == 3) result.push_back(observation(5102, L"Status low"));
+                    auto bytes = service.Handle({json.begin(), json.end()}); auto text = std::string(bytes.begin(), bytes.end());
+                    auto result = Parser(FromUtf8(text)).Parse();
+                    if (AsBool(Required(AsObject(result), L"ok")) != expectedOk) throw std::runtime_error("Unexpected service response: " + text);
                     return result;
-                }
-                if ((phase != L"perf-one-match" && phase != L"perf-competing" && phase != L"perf-churn") || !syntheticRunning.load() || syntheticExecutables.empty())
-                    return std::vector<HidHide::Profiles::ProcessObservation>{};
-                std::vector<HidHide::Profiles::ProcessObservation> result{ { 4242, 2, syntheticExecutables[0].filename().native(), syntheticExecutables[0], true } };
-                if (phase == L"perf-competing" && syntheticExecutables.size() > 1)
-                    result.push_back({ 4243, 3, syntheticExecutables[1].filename().native(), syntheticExecutables[1], true });
-                matchingObservations.fetch_add(result.size());
-                return result;
-            };
-            ProfilesAcceptanceContext acceptance{ root, enforcement, devices, (performancePhase||presentationPhase) ? processSource : CProfilesCoordinator::ProcessSource([] { return std::vector<HidHide::Profiles::ProcessObservation>{}; }) };
-            if (phase == L"repository-domain") { acceptance.processes = processSource; acceptance.failProcessScans = &failProcessScans; }
-            if (phase == L"live-status") { acceptance.processes = processSource; acceptance.liveProcessMode = &liveProcessMode; }
-            acceptance.driverConflictMode = [&](bool conflict) { enforcement.SetObservationMode(conflict ? AcceptanceEnforcement::ObservationMode::KnownConflict : AcceptanceEnforcement::ObservationMode::Normal); };
-            acceptance.adoptionCount = [&] { return enforcement.Adoptions(); };
-            acceptance.recoveryEvidence = [&] { return enforcement.RecoveryEvidence(); };
-            acceptance.failReconcile = [&](bool fail) { enforcement.FailReconcile(fail); };
-            acceptance.setAllowedApplications = [&](std::set<std::filesystem::path> allowed) { enforcement.SetAllowedApplications(std::move(allowed)); };
-            acceptance.observationMode = [&](int mode)
-            {
-                enforcement.SetObservationMode(mode == 1 ? AcceptanceEnforcement::ObservationMode::KnownConflict
-                    : mode == 2 ? AcceptanceEnforcement::ObservationMode::Unknown : AcceptanceEnforcement::ObservationMode::Normal);
-            };
-            acceptance.devicePipeline = phase == L"perf-reconnect" || phase == L"device-coalescing" || phase == L"device-conflict-propagation";
-            devices.ToggleOnRefresh(phase == L"perf-reconnect");
-            if (_wcsicmp(__wargv[2], L"startup-failure") == 0) acceptance.startupIntegration = [](bool) -> std::wstring { throw std::runtime_error("injected Run-key failure"); };
-            if (_wcsicmp(__wargv[2], L"adapter") == 0) acceptance.maintenanceSource = []() -> bool { throw std::runtime_error("injected maintenance inspection failure"); };
-            CHidHideClientDlg dialog(nullptr, acceptance); AfxGetApp()->m_pMainWnd = &dialog;
-            if (!dialog.Create(IDD_DIALOG_APPLICATION)) throw std::runtime_error("real profile dialog could not start");
-            auto accessibilityPhase = _wcsicmp(__wargv[2], L"accessibility") == 0;
-            auto performanceShow = phase == L"perf-editor" || phase == L"perf-tray" ? SW_SHOW : SW_SHOWMINIMIZED;
-            dialog.ShowWindow(performancePhase ? performanceShow : (accessibilityPhase||presentationPhase) ? SW_SHOW : SW_HIDE); dialog.UpdateWindow();
-            bool trayPath{}; if (phase == L"perf-tray") { trayPath = dialog.AcceptanceEnterTrayMode(); if (!trayPath) throw std::runtime_error("real tray icon path was unavailable"); }
-            if (_wcsicmp(__wargv[2], L"apply") == 0)
-            {
-                // Two semantic barriers let the parent prove that opening and
-                // editing a draft changed no catalog bytes before Apply.
-                ::SetEvent(ready);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("draft-stage command was not received");
-                ::ResetEvent(command); ::ResetEvent(ready);
-                if (!dialog.AcceptanceStageProfile()) throw std::runtime_error("real profile editor could not stage the acceptance draft");
-                ::SetEvent(completed); ::SetEvent(ready);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("apply command was not received");
-                if (!dialog.AcceptanceApply()) throw std::runtime_error("real Apply command path failed");
-                ::SetEvent(ready); ::SetEvent(completed);
-            }
-            else if (_wcsicmp(__wargv[2], L"reload") == 0)
-            {
-                if (!dialog.AcceptanceLoaded()) throw std::runtime_error("real editor and coordinator did not reload the saved profile");
-                if (!dialog.AcceptanceSearchSelectsOtherProfile()) throw std::runtime_error("real search control could not filter and select another profile");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("clean shutdown command was not received");
-                dialog.DestroyWindow();
-                return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"invalid") == 0)
-            {
-                if (!dialog.AcceptanceRepositoryBlocked() || !dialog.AcceptanceBlockedCommandsSafe() || enforcement.Writes() != 0)
-                    throw std::runtime_error("invalid repository was not presented safely");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("invalid-repository shutdown command was not received");
-                dialog.DestroyWindow();
-                return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"unknown-fresh") == 0 || _wcsicmp(__wargv[2], L"conflict-fresh") == 0)
-            {
-                if (!dialog.AcceptanceRepositoryBlocked() || !dialog.AcceptanceBlockedCommandsSafe() || enforcement.Writes() != 0)
-                    throw std::runtime_error("unknown initial observation did not open the blocked recovery view");
-                for (auto const& entry : std::filesystem::directory_iterator(root))
-                    if (entry.is_regular_file() && entry.path().extension() == L".json") throw std::runtime_error("unknown initial observation wrote repository JSON");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("unknown-fresh shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"events") == 0)
-            {
-                enforcement.FailReconcile(true);
-                if (!dialog.AcceptanceExerciseZeroWriteEvents()) throw std::runtime_error("automatic and draft-only events wrote the repository");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("zero-write shutdown command was not received");
-                dialog.DestroyWindow();
-                return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"adapter") == 0)
-            {
-                if (!ExerciseProductionEnforcementAdapter()) throw std::runtime_error("production enforcement adapter conformance failed");
-                if (!dialog.AcceptanceMaintenanceFailure()) throw std::runtime_error("maintenance inspection failure did not remain fail-closed in the running UI");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("adapter-test shutdown command was not received");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"restore") == 0)
-            {
-                auto backup = std::filesystem::path(root.native() + L"-backup");
-                if (!dialog.AcceptanceRestoreBackup(backup) || enforcement.Writes() != 1)
-                    throw std::runtime_error("validated backup did not immediately recover and apply");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("restore-test shutdown command was not received");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"prompts") == 0)
-            {
-                if (!dialog.AcceptanceDirtyPromptSemantics()) throw std::runtime_error("Apply/Discard/Cancel prompt behavior failed");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("prompt-test shutdown command was not received");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"known-observation") == 0 || _wcsicmp(__wargv[2], L"known-observation-allowed-change") == 0 || _wcsicmp(__wargv[2], L"unknown-observation") == 0
-                || _wcsicmp(__wargv[2], L"verified-observation") == 0)
-            {
-                auto expectedKnown = _wcsicmp(__wargv[2], L"known-observation") == 0 || _wcsicmp(__wargv[2], L"known-observation-allowed-change") == 0;
-                auto changedAllowedApplications = _wcsicmp(__wargv[2], L"known-observation-allowed-change") == 0;
-                auto expectedVerified = _wcsicmp(__wargv[2], L"verified-observation") == 0;
-                if (!expectedVerified)
+                };
+                auto version = [](SavedVersion const& value) { return "{\"revision\":"+std::to_string(value.revision)+",\"hash\":"+ToUtf8(Escape(value.sha256))+"}"; };
+                auto settingsRequest = [&](Settings const& settings)
+                { return request("{\"command\":\"settings\",\"settings\":"+SerializeSettings(settings)+",\"expectedSettings\":"+version(application.SettingsVersion())+"}"); };
+                auto newDraft = [&]
                 {
-                    if (!dialog.AcceptanceObservationKnown(true, true)) throw std::runtime_error("verified observation precondition failed");
-                    if (changedAllowedApplications) enforcement.SetAllowedApplications({ HidHide::Profiles::NormalizeExecutable(root / L"ObservedFeeder.exe") });
-                    enforcement.SetObservationMode(expectedKnown ? AcceptanceEnforcement::ObservationMode::KnownConflict : AcceptanceEnforcement::ObservationMode::Unknown);
-                }
-                if (!dialog.AcceptanceObservationKnown(expectedKnown || expectedVerified, expectedVerified)) throw std::runtime_error("observed-state tri-state presentation failed");
-                if (expectedKnown && !dialog.AcceptanceMainDriverConflictAction(true, changedAllowedApplications)) throw std::runtime_error("main-window driver conflict adoption action failed");
-                ::SetEvent(ready); ::SetEvent(completed);
-                if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("observation-test shutdown command was not received");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"startup-failure") == 0)
-            {
-                if (!dialog.AcceptanceStartupFailure()) throw std::runtime_error("startup integration blocked saved policy publication");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("startup-failure shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"enforcement-failure") == 0)
-            {
-                enforcement.FailReconcile(true);
-                if (!dialog.AcceptanceSavedEnforcementFailure()) throw std::runtime_error("saved-but-enforcement-failed UI semantics were incorrect");
-                enforcement.FailReconcile(false);
-                if (!dialog.AcceptanceRetryActivation()) throw std::runtime_error("retry activation did not apply without rewriting JSON");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("enforcement-failure shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"hidden-refresh") == 0)
-            {
-                if (!dialog.AcceptanceHiddenPresentationRefresh()) throw std::runtime_error("hidden/minimized profile presentation did not refresh on restore");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("hidden-refresh shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"device-coalescing") == 0)
-            {
-                if (!dialog.AcceptanceDeviceBurstCoalesced()) throw std::runtime_error("profile device notifications were not bounded and coalesced");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("device-coalescing shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"repository-domain") == 0)
-            {
-                if (!dialog.AcceptanceVerificationInvalidation()) throw std::runtime_error("saved/external policy snapshot was presented as verified before fresh observation");
-                if (!dialog.AcceptanceRepositoryDiagnosticsDoNotAdoptDriver()) throw std::runtime_error("repository diagnostics crossed the driver conflict boundary");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("repository-domain shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"live-status") == 0)
-            {
-                if (!dialog.AcceptanceLiveProcessStatus()) throw std::runtime_error("live process status rows did not track coordinator notifications");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("live-status shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"adoption-race") == 0)
-            {
-                if (!dialog.AcceptanceAdoptionRepositoryRace()) throw std::runtime_error("repository change during confirmation crossed the adoption boundary");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("adoption-race shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"adoption-retry") == 0)
-            {
-                if (!dialog.AcceptanceAdoptionRetryAfterFailure()) throw std::runtime_error("failed equal-Allowed adoption did not expose a safe retry");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("adoption-retry shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"global-status") == 0)
-            {
-                if (!dialog.AcceptanceGlobalStatusSemantics()) throw std::runtime_error("Global fallback/manual/paused UI and tray semantics were not distinct");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("global-status shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"adoption-changed-lifecycle") == 0)
-            {
-                if (!dialog.AcceptanceChangedAdoptionDraftLifecycle()) throw std::runtime_error("changed Allowed-app adoption draft lifecycle failed");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("adoption lifecycle shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if (_wcsicmp(__wargv[2], L"device-conflict-propagation") == 0 || _wcsicmp(__wargv[2], L"selection-unknown-propagation") == 0)
-            {
-                if (!dialog.AcceptanceObservationPropagation(phase == L"selection-unknown-propagation")) throw std::runtime_error("observed-state change did not propagate through the production presentation path");
-                ::SetEvent(ready); ::SetEvent(completed); if (::WaitForSingleObject(command, 10000) != WAIT_OBJECT_0) throw std::runtime_error("observation propagation shutdown command missing");
-                dialog.DestroyWindow(); return true;
-            }
-            else if(presentationPhase)
-            {
-                ProfilesView::OverrideThemeForAcceptance(phase.find(L"system")!=std::wstring::npos?-1:phase.find(L"dark")!=std::wstring::npos?1:0);
-                dialog.SendMessageW(ProfilesView::ThemeChangedMessage);
-                UINT dpi=phase.find(L"150")!=std::wstring::npos?144:phase.find(L"125")!=std::wstring::npos?120:phase.find(L"200")!=std::wstring::npos?192:96;
-                bool minimum=phase.find(L"minimum")!=std::wstring::npos;
-                if(!dialog.AcceptancePresentation(phase.find(L"clean")==std::wstring::npos,dpi,minimum?1040:1280,minimum?680:800))throw std::runtime_error("presentation validation failed");
-                dialog.ShowWindow(SW_SHOW);dialog.RedrawWindow(nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW|RDW_ALLCHILDREN);
-                ::SetEvent(ready);::SetEvent(completed);MSG message{};
-                for(;;){auto wait=::MsgWaitForMultipleObjects(1,&command,FALSE,30000,QS_ALLINPUT);if(wait==WAIT_OBJECT_0)break;if(wait==WAIT_TIMEOUT)continue;
-                    while(::PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){if(!AfxGetApp()->PreTranslateMessage(&message)){::TranslateMessage(&message);::DispatchMessageW(&message);}}}
-                dialog.DestroyWindow();return true;
-            }
-            else if (accessibilityPhase)
-            {
-                ::SetEvent(ready); ::SetEvent(completed); MSG message{};
-                for (;;)
+                    { std::ofstream file(executable); file << "isolated non-executable fixture"; }
+                    auto result = request("{\"command\":\"new\",\"kind\":\"application\",\"name\":\"F1 25\",\"executable\":"+ToUtf8(Escape(executable.native()))+"}");
+                    auto const& wire = AsObject(Required(AsObject(result), L"profile"));
+                    Profile profile; profile.id = AsString(Required(wire,L"id")); profile.name = AsString(Required(wire,L"name"));
+                    profile.revision = 1; profile.kind = Kind::Application; profile.executable = NormalizeExecutable(AsString(Required(wire,L"executablePath")));
+                    profile.priority = -1;
+                    for (auto const& device : devices.Enumerate()) profile.rules.push_back({device.identity, device.friendly, Visibility::Hidden});
+                    return profile;
+                };
+                auto apply = [&](Profile const& profile)
+                { return request("{\"command\":\"apply\",\"profile\":"+SerializeProfile(profile)+",\"expected\":null,\"settings\":"+SerializeSettings(coordinator.Snapshot().settings)+",\"expectedSettings\":"+version(application.SettingsVersion())+"}"); };
+                auto adopt = [&](std::string const& expected, bool ok = true)
+                { return request("{\"command\":\"adopt\",\"expectedSettings\":"+expected+"}", ok); };
+                if (phase == L"apply")
                 {
-                    auto wait = ::MsgWaitForMultipleObjects(1, &command, FALSE, 10000, QS_ALLINPUT);
-                    if (wait == WAIT_OBJECT_0) break; if (wait != WAIT_OBJECT_0 + 1) throw std::runtime_error("accessibility-test shutdown command missing");
-                    while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { ::TranslateMessage(&message); ::DispatchMessageW(&message); }
+                    ::SetEvent(ready); awaitCommand(); ::ResetEvent(ready);
+                    auto draft = newDraft(); ::SetEvent(completed); ::SetEvent(ready); awaitCommand();
+                    auto saved = apply(draft); require(AsBool(Required(AsObject(saved), L"saved")), "Apply failed to save");
+                    ::SetEvent(ready); ::SetEvent(completed); ::Sleep(INFINITE); // Parent tests abrupt process loss.
                 }
-                dialog.DestroyWindow(); return true;
-            }
-            else if (performancePhase)
-            {
-                std::atomic_bool generatorStop{}; std::thread generator;
-                if (phase == L"perf-churn") generator = std::thread([&] { while (!generatorStop) { syntheticRunning = !syntheticRunning.load(); ++syntheticTransitions; ::Sleep(137); } });
-                if (phase == L"perf-reconnect") generator = std::thread([&] { while (!generatorStop) { dialog.AcceptanceNotifyDeviceChange(); ++deviceNotifications; ::Sleep(100); } });
-                ::SetEvent(ready); ::SetEvent(completed); MSG message{};
-                for (;;)
+                else if (phase == L"reload")
                 {
-                    auto wait = ::MsgWaitForMultipleObjects(1, &command, FALSE, 10000, QS_ALLINPUT);
-                    if (wait == WAIT_OBJECT_0) break; if (wait == WAIT_TIMEOUT) continue;
-                    if (wait != WAIT_OBJECT_0 + 1) { generatorStop = true; if (generator.joinable()) generator.join(); throw std::runtime_error("performance-test shutdown command missing"); }
-                    while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { ::TranslateMessage(&message); ::DispatchMessageW(&message); }
+                    auto const& profiles = coordinator.Snapshot().profiles;
+                    auto found = std::find_if(profiles.begin(), profiles.end(), [&](auto const& item) { return item.second.executable == executable; });
+                    require(found != profiles.end() && found->second.name == L"F1 25" && found->second.rules.size() == 2, "saved application did not reload");
+                    request("{\"command\":\"snapshot\"}");
                 }
-                generatorStop = true; if (generator.joinable()) generator.join();
-                std::ofstream counters(root / L".performance-counters.txt", std::ios::binary | std::ios::trunc);
-                counters << "{\"processScans\":" << processScans.load() << ",\"matchingObservations\":" << matchingObservations.load()
-                    << ",\"syntheticTransitions\":" << syntheticTransitions.load() << ",\"deviceNotifications\":" << deviceNotifications.load()
-                    << ",\"deviceRefreshes\":" << devices.RefreshCount() << ",\"trayPath\":" << (trayPath ? "true" : "false")
-                    << ",\"trayIconAccepted\":" << (dialog.AcceptanceTrayIconAccepted() ? "true" : "false") << "}";
-                counters.close(); dialog.DestroyWindow(); return true;
+                else if (phase == L"invalid" || phase == L"unknown-fresh" || phase == L"conflict-fresh")
+                {
+                    auto result = request("{\"command\":\"snapshot\"}"); auto const& snapshot = AsObject(Required(AsObject(result), L"snapshot"));
+                    require(!AsArray(Required(snapshot,L"repositoryIssues")).empty() && coordinator.HasRepositoryDiagnostics(), "invalid repository was not blocked");
+                    std::string retryRequest="{\"command\":\"retry\"}";
+                    auto retryBytes=service.Handle({retryRequest.begin(),retryRequest.end()});
+                    auto retry=Parser(FromUtf8(std::string(retryBytes.begin(),retryBytes.end()))).Parse();
+                    require(!AsBool(Required(AsObject(retry),L"ok")) || !AsBool(Required(AsObject(retry),L"applied")), "blocked repository retry reported success");
+                    request("{\"command\":\"adopt\",\"expectedSettings\":{\"revision\":1,\"hash\":\"invalid\"}}", false);
+                    require(enforcement.Writes() == 0 && enforcement.Adoptions() == 0, "blocked service touched driver state");
+                }
+                else if (phase == L"adapter")
+                {
+                    require(ExerciseProductionEnforcementAdapter(), "production adapter conformance failed");
+                    require(!coordinator.EffectiveSelectionVerified() && coordinator.Status().find(L"maintenance") != std::wstring::npos, "maintenance failure was not fail-closed");
+                }
+                else if (phase == L"restore")
+                {
+                    require(coordinator.HasRepositoryDiagnostics(), "restore fixture was not initially blocked");
+                    request("{\"command\":\"restore\",\"path\":"+ToUtf8(Escape(root.native()+L"-backup"))+"}");
+                    require(!coordinator.HasRepositoryDiagnostics() && coordinator.EffectiveSelectionVerified() && enforcement.Writes() == 1, "restore did not recover and apply immediately");
+                }
+                else if (phase == L"events")
+                {
+                    enforcement.FailReconcile(true); auto draft = newDraft(); (void)draft;
+                    coordinator.AcceptanceScanNow(); devices.Refresh(); request("{\"command\":\"snapshot\"}");
+                    request("{\"command\":\"retry\"}");
+                }
+                else if (phase == L"enforcement-failure")
+                {
+                    enforcement.FailReconcile(true); auto settings = coordinator.Snapshot().settings; settings.paused = true;
+                    auto result = settingsRequest(settings);
+                    require(AsBool(Required(AsObject(result), L"saved")) && !AsBool(Required(AsObject(result), L"applied")), "save and failed enforcement were conflated");
+                    auto hash = application.SettingsVersion().sha256; enforcement.FailReconcile(false); request("{\"command\":\"retry\"}");
+                    require(coordinator.EffectiveSelectionVerified() && hash == application.SettingsVersion().sha256, "retry did not verify without writes");
+                }
+                else if (phase == L"live-status")
+                {
+                    auto draft = newDraft(); apply(draft); auto hash = application.SettingsVersion().sha256; auto saved = application.Version(draft.id).sha256;
+                    running = 1; require(coordinator.RetryActivation().applied && coordinator.IsVerifiedRunning(draft.id)
+                        && coordinator.EffectiveSelection().profileId == draft.id, "running application did not activate");
+                    running = 0; require(coordinator.RetryActivation().applied && !coordinator.IsVerifiedRunning(draft.id)
+                        && coordinator.EffectiveSelection().profileId == coordinator.Snapshot().settings.selectedGlobalId, "exited application did not return to Global");
+                    require(hash == application.SettingsVersion().sha256 && saved == application.Version(draft.id).sha256, "process selection wrote repository");
+                }
+                else if (phase == L"startup-failure")
+                {
+                    require(coordinator.Status().find(L"Run-key") != std::wstring::npos && coordinator.EffectiveSelectionVerified(), "startup error blocked policy or was hidden");
+                }
+                else if (phase == L"repository-domain" || phase == L"adoption-race")
+                {
+                    auto expected = version(application.SettingsVersion()); auto adoptions = enforcement.Adoptions(); auto evidence = enforcement.RecoveryEvidence();
+                    enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict); coordinator.ObserveEnforcement();
+                    { std::ofstream corrupt(root/L"settings.json", std::ios::trunc); corrupt << "{"; }
+                    request("{\"command\":\"snapshot\"}"); adopt(expected, false);
+                    require(coordinator.HasRepositoryDiagnostics() && enforcement.Adoptions() == adoptions && enforcement.RecoveryEvidence() == evidence
+                        && ReadBytes(root/L"settings.json") == "{", "repository diagnostics crossed driver adoption boundary");
+                }
+                else if (phase == L"adoption-retry")
+                {
+                    enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict); coordinator.ObserveEnforcement(); enforcement.FailReconcile(true);
+                    auto hash = application.SettingsVersion().sha256; auto result = adopt(version(application.SettingsVersion()));
+                    require(!AsBool(Required(AsObject(result),L"applied")) && !coordinator.AdoptionAwaitingSave(), "failed equal-Allowed adoption left an unsavable draft");
+                    enforcement.FailReconcile(false); enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Normal);
+                    request("{\"command\":\"retry\"}"); require(coordinator.EffectiveSelectionVerified() && hash == application.SettingsVersion().sha256, "post-adoption retry failed or wrote JSON");
+                }
+                else if (phase == L"global-status")
+                {
+                    require(coordinator.EffectiveSelection().reason == SelectionReason::GlobalFallback, "Automatic fallback reason missing");
+                    auto settings = coordinator.Snapshot().settings; settings.mode = Mode::UseGlobal; settingsRequest(settings);
+                    require(coordinator.EffectiveSelection().reason == SelectionReason::ManualGlobal, "Manual Global reason missing");
+                    settings = coordinator.Snapshot().settings; settings.paused = true; settingsRequest(settings);
+                    require(coordinator.EffectiveSelection().reason == SelectionReason::Paused && !enforcement.Observe().observed.hidingEnabled, "Paused reason or hiding state incorrect");
+                }
+                else if (phase == L"adoption-changed-lifecycle")
+                {
+                    auto hash = application.SettingsVersion().sha256; auto feeder = NormalizeExecutable(root/L"Feeder.exe");
+                    { std::ofstream file(feeder); file << "fixture"; }
+                    enforcement.SetAllowedApplications({feeder}); enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict); coordinator.ObserveEnforcement();
+                    auto result = adopt(version(application.SettingsVersion()));
+                    require(AsBool(Required(AsObject(result),L"needsApply")) && coordinator.AdoptionAwaitingSave() && hash == application.SettingsVersion().sha256, "changed adoption did not stay detached");
+                    auto settings = coordinator.Snapshot().settings; settings.allowedApplications = {feeder};
+                    request("{\"command\":\"abandon-adoption\"}");
+                    require(!coordinator.AdoptionAwaitingSave() && hash == application.SettingsVersion().sha256, "discard changed repository");
+                    enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict); coordinator.ObserveEnforcement();
+                    adopt(version(application.SettingsVersion())); settingsRequest(settings);
+                    require(coordinator.Snapshot().settings.allowedApplications.count(feeder) == 1 && !coordinator.AdoptionAwaitingSave(), "adopted Allowed apps were not committed");
+                }
+                else if (phase == L"verified-observation" || phase == L"known-observation" || phase == L"known-observation-allowed-change"
+                    || phase == L"unknown-observation" || phase == L"device-conflict-propagation" || phase == L"selection-unknown-propagation")
+                {
+                    bool verified = phase == L"verified-observation";
+                    bool unknown = phase == L"unknown-observation" || phase == L"selection-unknown-propagation";
+                    if (phase == L"known-observation-allowed-change") enforcement.SetAllowedApplications({NormalizeExecutable(root/L"Feeder.exe")});
+                    if (!verified) enforcement.SetObservationMode(unknown ? AcceptanceEnforcement::ObservationMode::Unknown : AcceptanceEnforcement::ObservationMode::KnownConflict);
+                    devices.Refresh(); auto result = request("{\"command\":\"snapshot\"}"); auto const& snapshot = AsObject(Required(AsObject(result),L"snapshot"));
+                    require(AsBool(Required(snapshot,L"verified")) == verified, "snapshot verification was stale");
+                    for (auto const& device : AsArray(Required(snapshot,L"devices")))
+                        require((AsString(Required(AsObject(device),L"current")) == L"Unknown") == unknown, "known and unknown device state were conflated");
+                    require(coordinator.HasDriverConflict() == (!verified && !unknown), "driver conflict state was stale");
+                }
+                else throw std::runtime_error("unknown headless acceptance phase");
+                finish(); coordinator.Stop();
             }
-            else throw std::runtime_error("unknown restart phase");
-            MSG message{}; while (::GetMessageW(&message, nullptr, 0, 0) > 0) { ::TranslateMessage(&message); ::DispatchMessageW(&message); }
         }
         catch (std::exception const& error)
         {
@@ -883,6 +733,7 @@ BOOL CHidHideClientApp::InitInstance()
 
     // The editor bridge serves one or more requests with no driver or profile
     // ownership. Run before OLE, the dialog, startup integration, or any lease.
+    if (HidHide::Applications::RunHelper()) return FALSE;
     if (HidHide::Editor::RunRequestBridge()) return FALSE;
 
     // Initialize OLE library

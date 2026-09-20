@@ -55,3 +55,6 @@ button,input,select,.segments,.search{border-color:var(--control-line)}
 .theme-control{display:flex;align-items:center;gap:9px;margin-left:auto}.theme-toggle{font-size:12px;min-height:34px;padding:6px 10px}.theme-toggle svg{color:var(--accent)}.profile-item.selected{box-shadow:inset 3px 0 var(--accent)}.segments input:checked+span{box-shadow:inset 0 -2px var(--accent)}
 @media(max-width:980px){.theme-control{margin-left:0}.engine-controls{justify-content:flex-start}}
 @media(forced-colors:active){.profile-item.selected,.segments input:checked+span{box-shadow:none}.theme-toggle svg{color:ButtonText}}
+
+.application-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}.application-actions .field{flex:1;min-width:150px;margin:0}.running-applications{max-height:240px;overflow:auto;display:grid;gap:6px}.running-applications button,.selected-application{display:flex;align-items:center;gap:12px;text-align:left;padding:12px;min-width:0}.running-applications button span,.selected-application span{min-width:0}.running-applications small,.selected-application small{display:block;overflow-wrap:anywhere}.running-applications [aria-pressed=true]{border-color:var(--accent)}
+.running-applications button{justify-content:flex-start}

@@ -230,6 +230,7 @@
     <ClCompile Include="configuration_tests.cpp" />
     <ClCompile Include="maintenance_tests.cpp" />
     <ClCompile Include="profile_process_match_tests.cpp" />
+    <ClCompile Include="application_discovery_tests.cpp" />
     <ClCompile Include="profile_repository_tests.cpp" />
     <ClCompile Include="ioctl_contract_tests.cpp" />
   </ItemGroup>

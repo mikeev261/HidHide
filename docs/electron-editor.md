@@ -109,3 +109,28 @@ shows an error; profile JSON is never involved. The default remains dark.
 at 100-200 percent zoom, pending-draft preservation, reload persistence, write
 failure recovery and changing themes while the backend is unavailable.
 `npm test` also verifies preference storage across separate store instances.
+
+## Retired native UI fixtures
+
+The former MFC Profiles page, theme renderer, private dialog resources and
+`Test-ProfilesPresentation.ps1` / `Measure-ProfilesPerformance.ps1` are removed.
+Unified `Ci` no longer constructs or shows that retired editor. The resident
+engine still uses a hidden MFC window for native notifications and tray commands.
+
+The native restart harness now calls the same `Editor::Service` used by Electron:
+
+| Former native test responsibility | Current coverage |
+| --- | --- |
+| Apply, abrupt process loss, reload, detached drafts | Cross-process service acceptance and independent JSON parsing |
+| Invalid/missing settings, interrupted transactions, initial unknown driver state | Blocked service snapshots, no driver mutation, unchanged repository evidence |
+| Backup recovery, save versus activation failure, retry | Service restore and retry assertions |
+| Driver adoption, repository races, Allowed apps drafts | Service CAS/adoption/discard/apply assertions |
+| Automatic selection, startup integration failures, observed unknown/conflict | Injected coordinator process source and current service snapshots |
+| Device notification burst | Production device worker with a hidden engine window and fake device source |
+| Old control layout, MSAA/tab order, theme/DPI, dirty prompts and old-window performance modes | Retired with the old page; current Electron `acceptance.mjs`, `themes.mjs`, `presentation.mjs`, `polling.mjs` and `native-integration.mjs` cover the supported editor |
+
+Run editor UI checks explicitly from `Editor` after building native Release x64:
+`npm run test:ui`, `node tests/native-integration.mjs`, `node tests/themes.mjs`,
+`node tests/presentation.mjs`, and `node tests/polling.mjs`. These tests may display
+the current Electron editor. Fake driver/service coverage does not establish
+physical-device or installed-driver acceptance.

@@ -9,6 +9,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="application_discovery_tests.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="profile_process_match_tests.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

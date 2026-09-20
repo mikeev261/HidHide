@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
-#include "ProfilesPage.h"
+#include "ProfilesDeviceSource.h"
+#include "ProfilesCoordinator.h"
+#include "ProfileApplicationService.h"
 #include "ConfigurationChannel.h"
 
 namespace HidHide::Editor

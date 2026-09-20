@@ -1,5 +1,9 @@
 const {contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('hidHide',Object.freeze({
+ listApplications:()=>ipcRenderer.invoke('editor:applications-list'),
+ describeApplication:path=>ipcRenderer.invoke('editor:application-describe',path),
+ validateApplication:application=>ipcRenderer.invoke('editor:application-validate',application),
+ cancelApplicationDiscovery:()=>ipcRenderer.send('editor:applications-cancel'),
  getTheme:()=>ipcRenderer.invoke('editor:theme-current'),
  setTheme:theme=>ipcRenderer.invoke('editor:theme',theme),
  request:request=>ipcRenderer.invoke('editor:request',request),

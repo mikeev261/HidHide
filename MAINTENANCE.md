@@ -8,8 +8,9 @@ Exported IOCTL contracts, original signed files, Secure Boot and signature
 validation remain unchanged. No test certificates or trust-store changes.
 
 The production coordinator has no MFC Profiles page. Its hidden MFC message loop
-owns native enforcement and tray commands; historical native pages remain only
-for isolated acceptance. The editor uses an authenticated same-user native bridge
+owns native enforcement and tray commands. Restart and recovery acceptance uses
+the current editor service without profile windows; the device-coalescer fixture
+uses only a hidden engine window. The editor uses an authenticated same-user native bridge
 and cannot elevate the coordinator. The packaged renderer has no Node access or
 remote content. See docs/electron-editor.md for UI validation and process lifetime.
 

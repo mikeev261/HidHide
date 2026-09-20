@@ -5,8 +5,6 @@
     <ClInclude Include="src\ApplicationDiscovery.h"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="src\EditorService.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="src\EditorService.h"><Filter>Header Files</Filter></ClInclude>
-    <ClCompile Include="src\ProfilesView.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClInclude Include="src\ProfilesView.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">

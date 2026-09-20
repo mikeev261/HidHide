@@ -47,6 +47,9 @@ public:
 
     ApplyOutcome PublishSaved(HidHide::Profiles::LoadResult loaded, HidHide::Profiles::SavedVersion version, std::wstring action, bool cleanupPending = false);
     ApplyOutcome RetryActivation();
+    std::wstring LaunchSavedProfile(std::wstring const& id);
+    bool HasLaunchedProcess() const { return m_LaunchedProcess && ::WaitForSingleObject(m_LaunchedProcess, 0) != WAIT_OBJECT_0; }
+    std::wstring const& LaunchedProfileId() const { return m_LaunchedProfileId; }
     void Tick();
     bool AcceptanceScanNow();
     bool ReloadRepositoryIfChanged();
@@ -109,4 +112,7 @@ private:
     HANDLE m_WatcherStop{};
     HWND m_NotifyWindow{};
     UINT m_NotifyMessage{};
+    HANDLE m_LaunchedProcess{};
+    std::wstring m_LaunchedProfileId;
+    bool m_LaunchUncertain{};
 };

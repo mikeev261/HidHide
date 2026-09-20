@@ -19,7 +19,7 @@ const fixtureNative=!app.isPackaged&&fixtureIndex>=0?process.argv[fixtureIndex+1
 if(fixture)globalThis.__fixtureControl=require('./fixture.cjs').control;
 if(fixture||fixtureNative)app.setPath('userData',path.join(app.getPath('temp'),'HidHide-Editor-Fixture-'+process.pid));
 const native=app.isPackaged?path.resolve(path.dirname(process.execPath),'..','HidHideClient.exe'):path.resolve(__dirname,'../../bin/Release/x64/HidHideClient.exe');
-const commands=new Set(['snapshot','apply','settings','delete','retry','backup','restore','import','export','new','adopt','abandon-adoption']);
+const commands=new Set(['snapshot','apply','settings','delete','retry','launch','backup','restore','import','export','new','adopt','abandon-adoption']);
 function finishOperation(){inFlight--;if(!inFlight&&closeWhenIdle){closeWhenIdle=false;closing=true;window.close();}}
 function validSender(event){if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||!event.senderFrame.url.startsWith(origin+'/'))throw Error('Untrusted editor request.');}
 let bridge=null;

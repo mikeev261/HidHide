@@ -423,6 +423,8 @@ BOOL CHidHideClientDlg::OnInitDialog()
     {
         if (m_Exiting || !IsWindowEnabled()) throw std::runtime_error("Close open HidHide dialogs before running setup");
         if (m_EditorService && m_EditorService->EditorOpen()) throw std::runtime_error("Close the HidHide Profiles editor before running setup. Apply or discard its unsaved changes first");
+        if (m_ProfilesCoordinator && m_ProfilesCoordinator->HasLaunchedProcess())
+            throw std::runtime_error("Close the directly launched application before running setup maintenance");
         if (m_ProfilesPage && !m_ProfilesPage->ConfirmAbandon(L"entering setup maintenance"))
             throw std::runtime_error("Setup maintenance was cancelled because a profile draft remains open");
         auto confirmed = m_ProfilesEnforcement->PrepareMaintenance(); m_MaintenancePrepared = true; EnableWindow(FALSE); return confirmed;

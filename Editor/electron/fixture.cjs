@@ -16,6 +16,15 @@ exports.request=async request=>{
  switch(q.command){
  case 'snapshot':{snapshotRequests++;activeSnapshots++;peakSnapshots=Math.max(peakSnapshots,activeSnapshots);try{if(snapshotDelay)await new Promise(resolve=>setTimeout(resolve,snapshotDelay));return {ok:true,snapshot:snapshot()};}finally{activeSnapshots--;}}
  case 'editor-state':return {ok:true};
+ case 'launch':{
+  cas(q.expectedSettings,state.settingsVersion);
+  const target=state.profiles.find(p=>p.id===q.id);
+  if(!target||target.kind!=='application'||!target.enabled)throw Error('Choose a saved enabled application profile.');
+  cas(q.expected,target.version);
+  if(state.settings.paused||state.settings.allowedApplications.some(p=>p.toLowerCase()===target.executablePath.toLowerCase()))throw Error('Profile launch is blocked by current settings.');
+  state.activeId=target.id;state.launchedId=target.id;
+  return {ok:true,message:'Fixture simulated a verified direct launch.'};
+ }
  case 'new':case 'import':return {ok:true,profile:{...profile('00000000-0000-4000-8000-'+String(++counter).padStart(12,'0'),q.name||'Imported profile',q.kind||'application',q.executable||'C:\\Games\\Imported.exe'),enabled:q.command!=='import',version:undefined}};
  case 'apply':case 'settings':case 'delete':{
   cas(q.expectedSettings,state.settingsVersion);

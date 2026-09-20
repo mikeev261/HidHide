@@ -1,5 +1,18 @@
 # Unified package progress
 
+## Direct application launch ordering — 2026-09-20
+
+The editor now offers **Launch with profile** for a saved enabled application
+profile. The ordinary-user coordinator creates that exact executable suspended,
+applies and reads back the complete policy, then resumes it and holds the profile
+by an owned process handle until that process exits. It rejects an existing target,
+an Allowed-app target, stale profile/settings versions, paused hiding, maintenance,
+and unresolved driver or repository state. Automatic discovery of games started
+elsewhere remains best effort. The isolated Windows child-process fixture covers
+execution ordering and failure cleanup; physical signed-driver early-open, feeder,
+and retained-handle acceptance remains outstanding. No installed driver or profile
+was changed by this development work.
+
 ## Device categories and controller view filter — 2026-09-19
 
 Candidate 2.1.16 adds distinct audio-interface, video-capture, Stream Deck/dial,

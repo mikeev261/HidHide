@@ -65,8 +65,15 @@ Automatic detection is best effort. It does not guarantee that hiding is applied
 already-open handles lose access. Read-only CLI queries do not automatically whitelist the CLI executable.
 
 For reliable hiding at application startup, configure and Apply the complete Global
-or application profile before starting the game. Keep the game out of Allowed apps,
-and keep feeder utilities that must read physical devices in Allowed apps. The profile
+profile, select **Use Global**, verify it is active, and then start the game. Alternatively,
+save an enabled application profile and use **Launch with profile** in its editor card:
+the ordinary-user coordinator starts that exact executable suspended, applies and reads
+back its complete policy, then resumes it and holds that profile until the launched
+process exits while the coordinator remains active. It rejects an already-running
+target because existing handles may remain usable. Keep the game out of Allowed
+apps, and keep feeder utilities that must read
+physical devices in Allowed apps. Merely applying an inactive application profile saves
+it; that does not put its device policy in force before an external launch. The profile
 policy replaces the former permanent Devices selection; there is no second device policy
 to combine with it. Reconnect devices after configuration changes when the UI directs it.
 
@@ -77,10 +84,17 @@ configuration dialogs, and errors can delay application of a detected profile. S
 manager first, automatic sign-in startup, or a profile showing *Running* does not establish that hiding preceded a game's
 first device open. The signed driver checks access at device-open time and does not revoke already-open handles.
 An application that opened a controller before hiding took effect can therefore retain access. Close that application,
-Apply the required profile, and then restart it; waiting for detection does not repair an existing handle. There is no
-apply-profile-then-launch workflow in this client.
+verify the required Global policy or use **Launch with profile**, and then start it again;
+waiting for detection does not repair an existing handle. The direct launch action does
+not cover a launcher that hands off to another process, a child after its parent exits,
+or a game started elsewhere. It launches the saved executable without extra arguments.
+While that process runs, profile edits and setup maintenance are blocked; tray Exit
+explicitly restores the baseline and ends monitoring. A coordinator crash or restart
+also ends the hold, so a running game must be closed and launched again through
+the verified path after recovery.
 
-This activation contract is based on source inspection, not live verification against an installed signed driver.
+This activation contract is based on source inspection and isolated process fixtures,
+not live verification against an installed signed driver.
 The [manual validation procedure](testing/app-profile-activation.md) covers startup ordering and retained handles;
 validation on the supported installed signed driver remains outstanding.
 

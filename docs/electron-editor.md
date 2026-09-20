@@ -1,5 +1,16 @@
 # Electron profile editor
 
+For device-open ordering, the editor can launch a saved application profile's
+exact executable through the ordinary-user coordinator. The process remains
+suspended until the complete profile is applied and read back, then the coordinator
+holds that policy until the tracked process exits. An existing target, an Allowed
+apps exemption, stale saved version, paused hiding, maintenance, or unknown driver
+state blocks launch. This action does not cover launcher handoffs or extra arguments;
+automatic discovery of externally started games remains best effort. See
+`testing/app-profile-activation.md` for the outstanding signed-driver procedure.
+Run `node tests/launch-order.mjs` from `Editor` for the isolated real-child and
+Electron-to-native launch ordering regression.
+
 Candidate 2.1.12 implements the approved charcoal/red design in React and CSS,
 with Electron as an independent editor process. The native coordinator continues
 to own matching, profile persistence, enforcement, baseline recovery and its tray.

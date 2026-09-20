@@ -28,6 +28,61 @@ namespace
         FILETIME created{}, exited{}, kernel{}, user{}; if (!::GetProcessTimes(process, &created, &exited, &kernel, &user)) return 0;
         ULARGE_INTEGER value{}; value.LowPart = created.dwLowDateTime; value.HighPart = created.dwHighDateTime; return value.QuadPart;
     }
+    struct ExecutableIdentity
+    {
+        DWORD volume{}, high{}, low{};
+        bool operator==(ExecutableIdentity const& other) const
+        { return volume == other.volume && high == other.high && low == other.low; }
+    };
+    std::optional<ExecutableIdentity> IdentifyExecutable(std::filesystem::path const& path)
+    {
+        HANDLE file = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            auto error = ::GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return std::nullopt;
+            throw std::system_error(error, std::system_category(), "Inspect executable identity");
+        }
+        BY_HANDLE_FILE_INFORMATION info{}; auto known = ::GetFileInformationByHandle(file, &info); auto error = ::GetLastError();
+        ::CloseHandle(file);
+        if (!known) throw std::system_error(error, std::system_category(), "Inspect executable identity");
+        return ExecutableIdentity{ info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow };
+    }
+    struct SuspendedProcess { HANDLE process{}; HANDLE thread{}; DWORD processId{}; };
+    class DirectLauncher final
+    {
+    public:
+        static SuspendedProcess Create(std::filesystem::path const& executable)
+        {
+            auto command = L"\"" + executable.native() + L"\"";
+            STARTUPINFOW startup{ sizeof(startup) }; PROCESS_INFORMATION process{};
+            if (!::CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED,
+                nullptr, executable.parent_path().c_str(), &startup, &process))
+                throw std::system_error(::GetLastError(), std::system_category(), "Create suspended application");
+            return { process.hProcess, process.hThread, process.dwProcessId };
+        }
+        static std::filesystem::path Path(SuspendedProcess const& process)
+        {
+            std::vector<wchar_t> path(32768); DWORD size = static_cast<DWORD>(path.size());
+            if (!::QueryFullProcessImageNameW(process.process, 0, path.data(), &size) || !size || size >= path.size())
+                throw std::runtime_error("Could not verify the launched executable path");
+            return std::wstring(path.data(), size);
+        }
+        static bool Resume(SuspendedProcess const& process)
+        { return ::ResumeThread(process.thread) == 1; }
+        // Return true only when the process has exited. A failed resume may
+        // have started the thread, in which case its profile must remain held.
+        static bool Abort(SuspendedProcess const& process) noexcept
+        {
+            if (::WaitForSingleObject(process.process, 0) == WAIT_OBJECT_0) return true;
+            auto prior = ::SuspendThread(process.thread);
+            if (prior == static_cast<DWORD>(-1)) return ::WaitForSingleObject(process.process, 0) == WAIT_OBJECT_0;
+            if (prior == 0) { (void)::ResumeThread(process.thread); return false; }
+            (void)::TerminateProcess(process.process, ERROR_CANCELLED);
+            return ::WaitForSingleObject(process.process, 5000) == WAIT_OBJECT_0;
+        }
+    };
 }
 
 CProfilesCoordinator::CProfilesCoordinator(HidHide::Profiles::IEnforcement& enforcement, std::filesystem::path repositoryRoot,
@@ -297,14 +352,109 @@ CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::PublishSaved(HidHide::P
 
 CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::RetryActivation()
 {
+    if (HasLaunchedProcess()) return { false, false, m_EffectiveVerified, L"A directly launched application holds its verified profile until that process exits.", {} };
     auto scan = Scan(m_Snapshot); if (!scan.complete) return { false, false, false, L"Retry could not verify running processes; last verified visibility was retained.", {} };
+    m_RunningProfiles = scan.runningProfiles; m_MissingProfiles = scan.missingProfiles;
     return Reconcile(scan.selection, false, {});
+}
+
+std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
+{
+    if (HasLaunchedProcess()) throw std::runtime_error("Close the directly launched application before launching another profile");
+    if (m_LaunchedProcess) { ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false; }
+    if (m_RepositoryInvalid || m_Conflict || m_AdoptedNeedsApply || m_Snapshot.settings.paused || !m_Issues.empty())
+        throw std::runtime_error("Resolve profile, driver, or paused-hiding state before launching an application");
+    try { if (m_MaintenanceSource()) throw std::runtime_error("Setup maintenance is active; application launch is blocked"); }
+    catch (std::runtime_error const&) { throw; }
+    catch (...) { throw std::runtime_error("Setup maintenance state is unknown; application launch is blocked"); }
+    { std::lock_guard<std::mutex> lock(m_WorkerMutex); if (m_WorkerFailed || m_StopRequested) throw std::runtime_error("Profile monitoring is unavailable; application launch is blocked"); }
+    auto found = m_Snapshot.profiles.find(id);
+    if (found == m_Snapshot.profiles.end() || found->second.kind != HidHide::Profiles::Kind::Application || !found->second.enabled)
+        throw std::invalid_argument("Choose a saved, enabled application profile to launch");
+    auto executable = HidHide::Profiles::NormalizeExecutable(found->second.executable);
+    auto targetIdentity = IdentifyExecutable(executable);
+    if (!targetIdentity) throw std::runtime_error("The saved application executable is missing");
+    for (auto const& allowed : m_Snapshot.settings.allowedApplications)
+    {
+        auto allowedIdentity = IdentifyExecutable(allowed);
+        if (_wcsicmp(allowed.lexically_normal().c_str(), executable.c_str()) == 0
+            || (allowedIdentity && *allowedIdentity == *targetIdentity))
+            throw std::runtime_error("This application is in Allowed apps and can read hidden devices; remove that exception before launch");
+    }
+
+    // The automatic scanner normally skips work in Use Global mode. For launch,
+    // inspect the target regardless: an existing process may retain an old handle.
+    auto scanSnapshot = m_Snapshot; scanSnapshot.settings.mode = HidHide::Profiles::Mode::Automatic;
+    scanSnapshot.settings.paused = false;
+    auto checkExisting = [&](DWORD ownPid)
+    {
+        auto scan = Scan(scanSnapshot);
+        if (!scan.complete) throw std::runtime_error("Process discovery is unavailable; application launch is blocked");
+        for (auto const& process : scan.processes)
+        {
+            if (process.processId == ownPid || _wcsicmp(process.fileName.c_str(), executable.filename().c_str()) != 0) continue;
+            if (!process.pathAccessible || process.verifiedPath.empty())
+                throw std::runtime_error("A same-name process cannot be identified; close it before launching this profile");
+            if (_wcsicmp(HidHide::Profiles::NormalizeExecutable(process.verifiedPath).c_str(), executable.c_str()) == 0)
+                throw std::runtime_error("This application is already running and may hold physical devices; close it before launching through HidHide Profiles");
+        }
+    };
+    checkExisting(0);
+    std::wstring launchId = id;
+    auto process = DirectLauncher::Create(executable);
+    auto close = [&] { if (process.thread) ::CloseHandle(process.thread); if (process.process) ::CloseHandle(process.process); };
+    try
+    {
+        if (!process.process || !process.thread || !process.processId
+            || _wcsicmp(HidHide::Profiles::NormalizeExecutable(DirectLauncher::Path(process)).c_str(), executable.c_str()) != 0)
+            throw std::runtime_error("The suspended process did not match the saved executable path");
+        checkExisting(process.processId);
+        HidHide::Profiles::Selection selected{ id, HidHide::Profiles::SelectionReason::Application, executable.filename().native(), true };
+        auto applied = Reconcile(selected, false);
+        if (!applied.applied || !m_EffectiveVerified)
+            throw std::runtime_error("The application profile could not be applied and verified before launch");
+        auto observed = m_Enforcement.Observe();
+        if (!observed.success || !observed.observedKnown || observed.conflict || !(observed.observed == Desired(m_Snapshot, selected)))
+        {
+            m_EffectiveVerified = false; if (observed.conflict) m_Conflict = true;
+            throw std::runtime_error("Driver readback changed before launch; the suspended application was stopped");
+        }
+        std::wstring successStatus = L"Directly launched application profile applied and verified; held until that process exits";
+        std::wstring successMessage = L"Application launched after its complete profile was verified. The profile remains held while this process runs.";
+        if (!DirectLauncher::Resume(process)) throw std::runtime_error("The verified application could not be resumed");
+        m_LaunchedProcess = process.process; process.process = nullptr;
+        m_LaunchedProfileId.swap(launchId);
+        m_LaunchUncertain = false;
+        m_Status.swap(successStatus);
+        close();
+        return successMessage;
+    }
+    catch (...)
+    {
+        auto failure = std::current_exception();
+        if (process.process && !DirectLauncher::Abort(process))
+        {
+            m_LaunchedProcess = process.process; process.process = nullptr;
+            m_LaunchedProfileId.swap(launchId);
+            m_LaunchUncertain = true;
+            m_EffectiveVerified = false;
+            m_Status = L"Application start is uncertain; last policy is held until that process exits";
+            close();
+            throw std::runtime_error("Application start is uncertain; its profile remains held until the process exits");
+        }
+        close(); m_LaunchedProfileId.clear(); m_LaunchUncertain = false;
+        // The prelaunch policy may have reached the driver. Restore the current
+        // automatic/Global selection if it can be verified, or retain evidence.
+        try { (void)RetryActivation(); } catch (...) { m_EffectiveVerified = false; }
+        std::rethrow_exception(failure);
+    }
 }
 
 HidHide::Profiles::EnforcementResult CProfilesCoordinator::ObserveEnforcement()
 {
     auto result = m_Enforcement.Observe();
-    auto verified = result.success && result.observedKnown && !m_RepositoryInvalid && result.observed == Desired(m_Snapshot, m_Selection);
+    auto verified = result.success && result.observedKnown && !m_RepositoryInvalid && !m_LaunchUncertain
+        && result.observed == Desired(m_Snapshot, m_Selection);
     m_EffectiveVerified = verified;
     if (result.conflict) { m_Conflict = true; m_Status = result.failure; }
     else if (!verified && !result.failure.empty()) m_Status = result.failure;
@@ -321,6 +471,16 @@ void CProfilesCoordinator::Tick()
     {
         m_EffectiveVerified = false; m_Status = L"Setup maintenance state could not be verified; profile activation is blocked"; return;
     }
+    if (m_LaunchedProcess)
+    {
+        auto wait = ::WaitForSingleObject(m_LaunchedProcess, 0);
+        if (wait == WAIT_TIMEOUT) return;
+        if (wait == WAIT_FAILED) { m_EffectiveVerified = false; m_Status = L"Launched process state is unknown; last policy was retained"; return; }
+        ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false;
+        m_EffectiveVerified = false;
+        { std::lock_guard<std::mutex> lock(m_WorkerMutex); m_AppliedSequence = m_CompletedSequence; }
+        (void)RetryActivation(); return;
+    }
     ScanResult result; std::uint64_t sequence{};
     { std::lock_guard<std::mutex> lock(m_WorkerMutex); if (m_WorkerFailed) { m_Status = L"Process monitoring stopped"; return; } if (m_AppliedSequence == m_CompletedSequence) return; result = m_Completed; sequence = m_CompletedSequence; if (result.revision != m_SubmittedRevision) return; }
     m_RunningProfiles = result.runningProfiles; m_MissingProfiles = result.missingProfiles;
@@ -331,6 +491,7 @@ void CProfilesCoordinator::Tick()
 
 bool CProfilesCoordinator::AcceptanceScanNow()
 {
+    if (HasLaunchedProcess()) return ObserveEnforcement().success && m_EffectiveVerified;
     auto scan = Scan(m_Snapshot); if (!scan.complete) return false;
     m_RunningProfiles = scan.runningProfiles; m_MissingProfiles = scan.missingProfiles;
     auto outcome = Reconcile(scan.selection, false); return outcome.applied && m_RepositoryWrites == 0;
@@ -392,6 +553,7 @@ void CProfilesCoordinator::Stop() noexcept
 {
     { std::lock_guard<std::mutex> lock(m_WorkerMutex); if (m_StopRequested) return; m_StopRequested = true; } m_WorkerWake.notify_one(); if (m_WatcherStop) ::SetEvent(m_WatcherStop); if (m_Worker.joinable()) m_Worker.join(); if (m_RepositoryWatcher.joinable()) m_RepositoryWatcher.join(); if (m_WatcherStop) { ::CloseHandle(m_WatcherStop); m_WatcherStop = nullptr; }
     try { ExitSafely(); } catch (...) {}
+    if (m_LaunchedProcess) { ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false; }
 }
 
 std::wstring CProfilesCoordinator::ConfigureAutoStart(bool enabled) const

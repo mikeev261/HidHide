@@ -226,13 +226,39 @@ namespace
             } devices;
             class HostEnforcement final : public AcceptanceEnforcement
             {
+                std::filesystem::path m_Root;
+                bool m_LaunchWitness{};
+            public:
+                explicit HostEnforcement(std::filesystem::path root) : m_Root(std::move(root)) {}
+                void ArmLaunchWitness()
+                {
+                    m_LaunchWitness = true;
+                    std::error_code ignored; std::filesystem::remove(m_Root/L"launch-verified.flag", ignored);
+                    std::filesystem::remove(m_Root/L"launch-readback-started.flag", ignored);
+                }
+                EnforcementResult Observe() override
+                {
+                    auto result = AcceptanceEnforcement::Observe();
+                    if (m_LaunchWitness && result.success && result.observedKnown
+                        && result.observed.hiddenDevices.count(L"HID\\FIXTURE_PEDALS"))
+                    {
+                        std::ofstream started(m_Root/L"launch-readback-started.flag", std::ios::binary|std::ios::trunc);
+                        started << "readback"; started.close();
+                        ::Sleep(350); // Child execution must remain suspended through readback.
+                        std::ofstream marker(m_Root/L"launch-verified.flag", std::ios::binary|std::ios::trunc);
+                        marker << "verified";
+                        m_LaunchWitness = false;
+                    }
+                    return result;
+                }
+            public:
                 EnforcementResult Reconcile(DesiredEnforcement const& desired) override
                 {
                     auto current = Observe();
                     if (current.success && current.observedKnown && current.observed == desired) return current;
                     return AcceptanceEnforcement::Reconcile(desired);
                 }
-            } enforcement;
+            } enforcement(root);
             ProfileApplicationService application(root/L"Profiles"); auto initial = application.OpenOrCreate();
             auto settings = initial.snapshot.settings; settings.startWithWindows = false;
             application.ApplySettings(settings,application.SettingsVersion());
@@ -279,6 +305,17 @@ namespace
                         {
                             running=AsBool(Required(request,L"running")); coordinator.AcceptanceScanNow();
                             std::string snapshot="{\"command\":\"snapshot\"}"; return service.Handle({snapshot.begin(),snapshot.end()});
+                        }
+                        if(command==L"fixture-launch-witness")
+                        {
+                            enforcement.ArmLaunchWitness(); std::string result="{\"ok\":true}";
+                            return std::vector<std::uint8_t>(result.begin(),result.end());
+                        }
+                        if(command==L"fixture-launch-readback")
+                        {
+                            enforcement.SetObservationMode(AsBool(Required(request,L"fail"))
+                                ? AcceptanceEnforcement::ObservationMode::Unknown : AcceptanceEnforcement::ObservationMode::Normal);
+                            std::string result="{\"ok\":true}"; return std::vector<std::uint8_t>(result.begin(),result.end());
                         }
                     }
                     catch (...) {} // Production handler returns bounded diagnostics.

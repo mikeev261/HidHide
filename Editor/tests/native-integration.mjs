@@ -25,6 +25,27 @@ try{
  const usageSnapshot=(await exchange({command:'snapshot'})).snapshot;
  assert.deepEqual(usageSnapshot.devices.find(d=>d.name==='Fixture steering wheel').hidUsages,[{known:true,page:1,usage:4},{known:false,page:0,usage:0}]);
  checks.push('Numeric HID usages and unavailable collection metadata survive the production editor bridge');
+ const initialRules=new Map(usageSnapshot.profiles.map(p=>[p.id,p.deviceRules]));
+ const wheelRule={identity:'hid\\fixture_wheel',friendlyName:'Saved lowercase wheel',visibility:'visible'};
+ const offlineRule={identity:'HID\\STORED_ONLY',friendlyName:'Stored-only device',visibility:'hidden'};
+ for(const name of ['Fixture Game','Default']){
+  const snapshot=(await exchange({command:'snapshot'})).snapshot;
+  const saved=snapshot.profiles.find(p=>p.name===name);assert(saved,`Missing ${name} profile`);
+  const {version,running,missing,...profile}=saved;
+  const added=name==='Default'?[wheelRule,offlineRule]:[wheelRule];
+  profile.deviceRules=[...profile.deviceRules,...added];
+  const outcome=await exchange({command:'apply',profile,expected:version,settings:snapshot.settings,expectedSettings:snapshot.settingsVersion});
+  assert.equal(outcome.saved,true);
+ }
+ const caseSnapshot=(await exchange({command:'snapshot'})).snapshot;
+ for(const name of ['Fixture Game','Default']){
+  const saved=caseSnapshot.profiles.find(p=>p.name===name);assert(saved);
+  assert.deepEqual(saved.deviceRules,[...initialRules.get(saved.id),wheelRule,...(name==='Default'?[offlineRule]:[])]);
+ }
+ assert.deepEqual(caseSnapshot.devices.filter(d=>d.id.toLowerCase()==='hid\\fixture_wheel').map(d=>({connected:d.connected,identities:d.identities})),
+  [{connected:true,identities:['HID\\FIXTURE_WHEEL']}]);
+ assert.deepEqual(caseSnapshot.devices.filter(d=>!d.connected).map(d=>d.id),['HID\\STORED_ONLY']);
+ checks.push('Case-variant saved rules in both profiles retain their text and unrelated rules without a disconnected live-device ghost');
  let page=await open();
  coldFixtureToReadyMs=performance.now()-fixtureStarted;
  await expect(page.getByRole('heading',{name:'Fixture Game',exact:true})).toBeVisible({timeout:20000});

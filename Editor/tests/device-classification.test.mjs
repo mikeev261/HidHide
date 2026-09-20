@@ -51,6 +51,27 @@ test('numeric HID collections support unfamiliar hardware, composites and inacce
  assert.equal(classifyDevice(info('Unknown USB device',[],'gamepad')).controller,'unknown');
 });
 
+test('numeric collection evidence takes precedence over game-like product names',()=>{
+ const keyboardOnly=classifyDevice(info('Generic USB pedals',[usage(1,6)]));
+ assert.equal(keyboardOnly.kind,'pedals');
+ assert.equal(keyboardOnly.controller,'non-game');
+ assert.match(keyboardOnly.reason,/All reported HID collections/);
+
+ const mixedKnownNonGame=classifyDevice(info('Unknown Shifter',[usage(1,6),usage(12,1)]));
+ assert.equal(mixedKnownNonGame.kind,'shifter');
+ assert.equal(mixedKnownNonGame.controller,'non-game');
+
+ const mixedGame=classifyDevice(info('Generic USB pedals',[usage(1,6),usage(1,4)]));
+ assert.equal(mixedGame.kind,'pedals');
+ assert.equal(mixedGame.controller,'game');
+ assert.match(mixedGame.reason,/Reports a game-input HID collection/);
+
+ for(const unknownUsage of [usage(0xff00,1),usage(1,6,false),usage(1,8)]){
+  const ambiguous=classifyDevice(info('Generic USB device',[usage(1,6),unknownUsage]));
+  assert.equal(ambiguous.controller,'unknown',JSON.stringify(unknownUsage));
+ }
+});
+
 test('name precedence avoids peripheral traps and supports offline hints without guessing vendors',()=>{
  for(const name of ['Elgato Game Capture HD60 X','Stream Deck Pedal','Stream Deck +','Sound BlasterX G6','Gaming mouse wheel','Xbox gaming headset'])assert.equal(classifyDevice(info(name)).controller,'non-game',name);
  for(const name of ['Creative device','Elgato device','Valve device','Steam Deck','Generic controller','Guitar accessory'])assert.equal(classifyDevice(info(name)).controller,'unknown',name);

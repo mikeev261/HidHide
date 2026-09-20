@@ -178,7 +178,12 @@ namespace HidHide::Editor
             settingsVersion = Version(m_Coordinator.SettingsVersion());
         }
         auto observed = m_Coordinator.ObserveEnforcement();
-        std::set<std::wstring> known;
+        struct IdentityLess
+        {
+            bool operator()(std::wstring const& left, std::wstring const& right) const
+            { return _wcsicmp(left.c_str(), right.c_str()) < 0; }
+        };
+        std::set<std::wstring, IdentityLess> known;
         auto addDevice = [&](std::wstring id, std::wstring name, bool connected, std::vector<std::wstring> const& identities, std::wstring detail, std::wstring kind, std::vector<ProfileHidUsage> const& usages)
         {
             Array paths; std::size_t hidden{};

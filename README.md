@@ -97,6 +97,8 @@ Third-party software deployment may benefit from the *HidHide Command Line Inter
 Please be conservative while altering a clients' configuration and only extend the configuration with new features offered.
 Don't assume exclusive ownership of the configuration settings as a recovery typically requires manual actions by the user.
 
+See [DEVELOPER.md](DEVELOPER.md) for programmatic integration (IOCTL API) details for feeder applications.
+
 ## Bugs & Features
 
 ~~Found a bug and want it fixed? Feel free to open a detailed issue on the [GitHub issue tracker](../../issues)!~~

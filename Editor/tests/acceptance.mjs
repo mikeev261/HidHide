@@ -16,6 +16,13 @@ try{
  const row=page.getByRole('row').filter({has:page.getByText('Button box',{exact:true})});
  await row.getByLabel('Hidden',{exact:true}).check();
  await expect(page.getByText('1 pending change',{exact:true})).toBeVisible();
+ await row.getByLabel('Visible',{exact:true}).check();
+ await expect(page.getByText('No pending changes',{exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Apply changes',exact:true})).toBeDisabled();
+ await expect(row.getByLabel('Changed')).toHaveCount(0);
+ passed.push('reversing a live default visibility choice clears pending work');
+ await row.getByLabel('Hidden',{exact:true}).check();
+ await expect(page.getByText('1 pending change',{exact:true})).toBeVisible();
  await expect(row.getByRole('cell').nth(1)).toContainText('Visible');
  await page.screenshot({path:path.join(output,'desktop-dirty.png')});
  passed.push('changed draft does not claim applied device change');

@@ -70,10 +70,10 @@ export function classifyDevice(device:Input):DeviceClassification{
  if(gameIndex>=0){
   controller='game';const u=usages[gameIndex];
   reason=`Reports a game-input HID collection (0x${u.page.toString(16)} / 0x${u.usage.toString(16)}). A composite device may also include non-game controls.`;
- }else if(match&&match[2]!=='unknown'){
-  controller=match[2];reason=`Inferred from the device name: ${labels[kind].toLowerCase()}.`;
  }else if(classes.length&&classes.every(c=>c==='non-game')){
   controller='non-game';reason='All reported HID collections are recognized non-game controls.';
+ }else if(match&&match[2]!=='unknown'){
+  controller=match[2];reason=`Inferred from the device name: ${labels[kind].toLowerCase()}.`;
  }
  return {kind,label:labels[kind],controller,reason};
 }

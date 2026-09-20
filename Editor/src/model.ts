@@ -10,25 +10,48 @@ export function makeDraft(p:CatalogProfile|Profile,s:Snapshot,isNew=false):Draft
 }
 export const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
 export const dirty=(d:Draft|null)=>!!d&&(d.deleting||!same(d.profile,d.original)||!same(d.settings,d.originalSettings));
+const sameRule=(a:Rule|undefined,b:Rule|undefined)=>a?.identity===b?.identity&&a?.friendlyName===b?.friendlyName&&a?.visibility===b?.visibility;
 export function visibility(p:Profile,device:Device,index?:Map<string,Rule['visibility']>):'hidden'|'visible'|'mixed' {
  const values=device.identities.map(id=>(index?index.get(id.toLowerCase()):p.deviceRules.find(r=>r.identity.toLowerCase()===id.toLowerCase())?.visibility)??'visible');
  return values.every(v=>v==='hidden')?'hidden':values.every(v=>v==='visible')?'visible':'mixed';
 }
 export function deviceRows(profile:Profile,original:Profile|null,devices:Device[]){
- const index=new Map(profile.deviceRules.map(rule=>[rule.identity.toLowerCase(),rule.visibility]));
- const before=original?new Map(original.deviceRules.map(rule=>[rule.identity.toLowerCase(),rule.visibility])):null;
+ const rules=new Map(profile.deviceRules.map(rule=>[rule.identity.toLowerCase(),rule]));
+ const savedRules=original?new Map(original.deviceRules.map(rule=>[rule.identity.toLowerCase(),rule])):null;
+ const index=new Map<string,Rule['visibility']>([...rules].map(([id,rule])=>[id,rule.visibility]));
  return devicesFor(profile,devices).map(device=>{
   const value=visibility(profile,device,index);
-  return {device,value,changed:!original||visibility(original,device,before!)!==value};
+  const changed=!savedRules||device.identities.some(identity=>{
+   const id=identity.toLowerCase(),rule=rules.get(id),saved=savedRules.get(id);
+   return !sameRule(rule,saved);
+  });
+  return {device,value,changed};
  });
 }
 export function filterDeviceRows<T extends {device:Device}>(rows:T[],hideDisconnected:boolean,connectionKnown:boolean,hideNonControllers=false):T[]{
  if(!hideNonControllers&&!(hideDisconnected&&connectionKnown))return rows;
  return rows.filter(row=>(!hideDisconnected||!connectionKnown||row.device.connected)&&(!hideNonControllers||classifyDevice(row.device).controller!=='non-game'));
 }
-export function setVisibility(p:Profile,device:Device,value:'hidden'|'visible'):Profile {
- const ids=new Set(device.identities.map(x=>x.toLowerCase()));
- return {...p,deviceRules:[...p.deviceRules.filter(r=>!ids.has(r.identity.toLowerCase())),...device.identities.map(identity=>({identity,friendlyName:device.name,visibility:value}))]};
+export function setVisibility(p:Profile,device:Device,value:'hidden'|'visible',original?:Profile|null,explicitDraftRules:ReadonlySet<string>=new Set()):Profile {
+ const ids=new Map(device.identities.map(identity=>[identity.toLowerCase(),identity]));
+ const saved=new Map(original?.deviceRules.map(rule=>[rule.identity.toLowerCase(),rule])??[]);
+ const seen=new Set<string>();
+ const rules=p.deviceRules.flatMap(rule=>{
+  const id=rule.identity.toLowerCase(),identity=ids.get(id);
+  if(identity===undefined)return [rule];
+  if(seen.has(id))return [];
+  seen.add(id);
+  const savedRule=saved.get(id);
+  if(original&&value==='visible'&&!savedRule&&!explicitDraftRules.has(id))return [];
+  if(savedRule?.visibility===value)return [{...savedRule}];
+  return [{...rule,visibility:value}];
+ });
+ for(const [id,identity] of ids)if(!seen.has(id)){
+  const savedRule=saved.get(id);
+  if(original&&value==='visible'&&!savedRule&&!explicitDraftRules.has(id))continue;
+  rules.push(savedRule?.visibility===value?{...savedRule}:{identity:savedRule?.identity??identity,friendlyName:savedRule?.friendlyName??device.name,visibility:value});
+ }
+ return {...p,deviceRules:rules};
 }
 export function devicesFor(profile:Profile,devices:Device[]):Device[] {
  const known=new Set(devices.flatMap(d=>d.identities.map(id=>id.toLowerCase())));
@@ -50,9 +73,9 @@ export function pendingCount(d:Draft):number {
  if(!d.original||d.deleting)return 1;
  let count=0; const a=d.original;
  for(const key of ['name','enabled','priority','executablePath'] as const)if(d.profile[key]!==a[key])count++;
- const rules=new Map(a.deviceRules.map(r=>[r.identity.toLowerCase(),r.visibility]));
- const updated=new Map(d.profile.deviceRules.map(r=>[r.identity.toLowerCase(),r.visibility]));
- for(const id of new Set([...rules.keys(),...updated.keys()]))if((rules.get(id)??'visible')!==(updated.get(id)??'visible'))count++;
+ const rules=new Map(a.deviceRules.map(r=>[r.identity.toLowerCase(),r]));
+ const updated=new Map(d.profile.deviceRules.map(r=>[r.identity.toLowerCase(),r]));
+ for(const id of new Set([...rules.keys(),...updated.keys()]))if(!sameRule(rules.get(id),updated.get(id)))count++;
  for(const key of Object.keys(d.settings) as (keyof Settings)[])if(!same(d.settings[key],d.originalSettings[key]))count++;
  return Math.max(1,count);
 }

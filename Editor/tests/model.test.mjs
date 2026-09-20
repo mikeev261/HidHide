@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {makeDraft,dirty,visibility,setVisibility,devicesFor,deviceRows,filterDeviceRows,validation,pendingCount} from '../src/model.ts';
+import {makeDraft,dirty,visibility,setVisibility,devicesFor,deviceRows,filterDeviceRows,validation,pendingCount,duplicateName} from '../src/model.ts';
 const fixture=createRequire(import.meta.url)('../electron/fixture.cjs');
 test('draft edits never mutate applied snapshot; grouped mixed identities stay explicit',()=>{
  const s=fixture.control({reset:true});const d=makeDraft(s.profiles[1],s);assert.equal(dirty(d),false);
@@ -164,4 +164,26 @@ test('an explicit remembered rule for a live identity survives toggles without p
  assert.equal(pendingCount(draft),1);
  assert.equal(deviceRows(draft.profile,draft.original,[liveButton]).find(row=>row.device.id===liveButton.id).changed,true);
  assert.equal(deviceRows(draft.profile,draft.original,[{...s.devices.find(device=>device.id==='xbox'),identities:['XBOX']}])[0].changed,false);
+});
+test('duplicateName truncates at the boundary, preserves short names, and handles surrogate pairs',()=>{
+ const s=fixture.control({reset:true});const d=makeDraft(s.profiles[1],s);
+ // Validation boundary
+ d.profile.name='x'.repeat(256);assert.equal(validation(d,s),'');
+ d.profile.name='x'.repeat(257);assert.match(validation(d,s),/256/);
+ // Production duplicateName: long name truncated to fit
+ const long=duplicateName('y'.repeat(256));
+ assert.equal(long.length,256);assert.ok(long.endsWith(' copy'));
+ // Short name preserved
+ assert.equal(duplicateName('Short Profile'),'Short Profile copy');
+ // Exact boundary: 251 chars + ' copy' = 256
+ assert.equal(duplicateName('z'.repeat(251)).length,256);
+ // Under boundary: 250 chars + ' copy' = 255
+ assert.equal(duplicateName('z'.repeat(250)),'z'.repeat(250)+' copy');
+ // Unicode: emoji surrogate pairs are not split
+ const emoji='\u{1F3AE}'.repeat(126); // 126 emoji = 126 graphemes (252 UTF-16 code units)
+ const emojiResult=duplicateName(emoji);
+ assert.ok(emojiResult.length<=256);assert.ok(emojiResult.endsWith(' copy'));
+ // Verify no broken surrogates: every char before ' copy' should be valid
+ const prefix=emojiResult.slice(0,-' copy'.length);
+ assert.ok(!/[\uD800-\uDBFF]$/.test(prefix),'must not end with a dangling high surrogate');
 });

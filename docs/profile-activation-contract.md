@@ -66,15 +66,12 @@ process. This provides convenience but is subject to the polling window:
 delayed device initialization, but they cannot guarantee hiding for
 applications that open controllers immediately at startup.
 
-### Pattern 3: Manual launch workflow
+### Pattern 3: Explicit launch workflow
 
-For maximum reliability with application profiles:
+For reliable hiding with application profiles without relying on a Global fallback, use the **Launch with profile** feature provided by the editor UI or command line:
 
-1. Start the profile manager if it is not already running.
-2. Verify the desired profile is active in the editor.
-3. Launch the game.
-
-This ensures the hiding policy is in place before the game opens devices.
+- This workflow explicitly applies the requested profile's policy to the driver **before** creating the game process.
+- Because the driver is configured first, the game encounters the hiding rules immediately during its initial startup.
 
 ## What the profile manager does not do
 
@@ -88,12 +85,14 @@ This ensures the hiding policy is in place before the game opens devices.
 ## Implications for the editor UI
 
 The editor displays both the **profile rule** (the desired policy) and
-the **applied now** state (what the driver currently reports). These may
-differ when:
+the **applied now** state (what the driver currently reports as its active policy).
+These may differ when:
 
-- A profile was just activated and the game already had a handle.
 - The coordinator has not yet applied a profile change.
 - The driver is not installed or not running.
 
-The editor correctly distinguishes these states. The "Applied now" column
-shows the observed driver state, not the desired profile state.
+**Important:** The "Applied now" column shows the observed driver policy. It
+**does not** prove that an application lost access to a device. If a game
+acquired a handle before the profile activated, the game retains effective access
+even though "Applied now" correctly reports the device is currently hidden
+from new `CreateFile` attempts.

@@ -66,7 +66,7 @@ test('numeric collection evidence takes precedence over game-like product names'
  assert.equal(mixedGame.controller,'game');
  assert.match(mixedGame.reason,/Reports a game-input HID collection/);
 
- for(const unknownUsage of [usage(0xff00,1),usage(1,6,false),usage(1,8)]){
+ for(const unknownUsage of [usage(0xff00,1),usage(1,6,false),usage(1,9)]){
   const ambiguous=classifyDevice(info('Generic USB device',[usage(1,6),unknownUsage]));
   assert.equal(ambiguous.controller,'unknown',JSON.stringify(unknownUsage));
  }

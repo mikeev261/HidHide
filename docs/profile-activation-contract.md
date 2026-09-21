@@ -60,15 +60,18 @@ process. This provides convenience but is subject to the polling window:
   handle before the profile activates.
 - Once the profile is active, subsequent device opens are correctly
   enforced.
-- Restarting the game after the profile is active resolves the issue.
 
 **Automatic profiles are best effort.** They work well for games with
 delayed device initialization, but they cannot guarantee hiding for
-applications that open controllers immediately at startup.
+applications that open controllers immediately at startup. For reliable hiding, use persistent Global hiding or the explicit **Launch with profile** flow.
 
 ### Pattern 3: Explicit launch workflow
 
-For reliable hiding with application profiles without relying on a Global fallback, use the **Launch with profile** feature provided by the editor UI or command line:
+For reliable hiding with application profiles without relying on a Global fallback, use the **Launch with profile** feature provided by the editor UI:
+
+1. Close any running copies of the game.
+2. Ensure the desired application profile is saved and enabled in the editor.
+3. Use the **Launch with profile** action to start the game directly from the editor.
 
 - This workflow explicitly applies the requested profile's policy to the driver **before** creating the game process.
 - Because the driver is configured first, the game encounters the hiding rules immediately during its initial startup.

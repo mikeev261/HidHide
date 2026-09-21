@@ -1,6 +1,7 @@
 import type {Profile, CatalogProfile, Snapshot, Draft, Device, Settings, Rule} from './types.ts';
 import {classifyDevice} from './device-kind.ts';
 export const clone = <T,>(value:T):T => structuredClone(value);
+export function duplicateName(name:string,maxLen=256):string{const suffix=' copy';if(name.length+suffix.length<=maxLen)return name+suffix;const target=maxLen-suffix.length;const chars=Array.from(name);let len=0,cut=0;for(const ch of chars){if(len+ch.length>target)break;len+=ch.length;cut++;}return chars.slice(0,cut).join('')+suffix;}
 export function profileData(p:Profile|CatalogProfile):Profile {
  return {schemaVersion:1,id:p.id,revision:p.revision,name:p.name,kind:p.kind,enabled:p.enabled,priority:p.priority,executablePath:p.executablePath,defaultVisibility:'visible',deviceRules:clone(p.deviceRules)};
 }

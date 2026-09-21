@@ -42,7 +42,7 @@ const rules:readonly [RegExp,DeviceKind,ControllerClass][]=[
 // Vendor and unfamiliar usages are not evidence of non-game status.
 export function usageController(u:HidUsage):ControllerClass{
  if(!u.known||!Number.isInteger(u.page)||!Number.isInteger(u.usage)||u.page<0||u.usage<0||u.page>65535||u.usage>65535)return 'unknown';
- if(u.page===1&&(u.usage===4||u.usage===5))return 'game';
+ if(u.page===1&&(u.usage===4||u.usage===5||u.usage===8))return 'game';
  if(u.page===2&&((u.usage>=1&&u.usage<=12)||[0x20,0x21,0x24].includes(u.usage)))return 'game';
  if(u.page===5&&[1,2,3].includes(u.usage))return 'game';
  if(u.page===1&&[1,2,6,7,0x80].includes(u.usage))return 'non-game';

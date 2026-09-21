@@ -40,9 +40,9 @@ test('local named products receive distinct, accurate categories including Xbox 
 });
 
 test('numeric HID collections support unfamiliar hardware, composites and inaccessible metadata',()=>{
- for(const [page,id] of [[1,4],[1,5],[2,2],[2,0x21],[5,1]])assert.equal(classifyDevice(info('New USB device',[usage(page,id)])).controller,'game');
+ for(const [page,id] of [[1,4],[1,5],[1,8],[2,2],[2,0x21],[5,1]])assert.equal(classifyDevice(info('New USB device',[usage(page,id)])).controller,'game');
  for(const [page,id] of [[1,2],[1,6],[12,1],[11,5],[13,2]])assert.equal(usageController(usage(page,id)),'non-game');
- for(const u of [usage(1,5,false),usage(0xff00,1),usage(1,8),usage(5,0x32),usage(-1,5),usage(1,NaN)])assert.equal(usageController(u),'unknown');
+ for(const u of [usage(1,5,false),usage(0xff00,1),usage(5,0x32),usage(-1,5),usage(1,NaN)])assert.equal(usageController(u),'unknown');
  assert.equal(classifyDevice(info('Generic device',[usage(12,1),usage(0xff00,1)])).controller,'unknown');
  assert.equal(classifyDevice(info('Generic device',[usage(12,1),usage(1,5,false)])).controller,'unknown');
  assert.equal(classifyDevice(info('Generic device',[usage(12,1),usage(1,0x80)])).controller,'non-game');
@@ -66,7 +66,7 @@ test('numeric collection evidence takes precedence over game-like product names'
  assert.equal(mixedGame.controller,'game');
  assert.match(mixedGame.reason,/Reports a game-input HID collection/);
 
- for(const unknownUsage of [usage(0xff00,1),usage(1,6,false),usage(1,8)]){
+ for(const unknownUsage of [usage(0xff00,1),usage(1,6,false),usage(1,9)]){
   const ambiguous=classifyDevice(info('Generic USB device',[usage(1,6),unknownUsage]));
   assert.equal(ambiguous.controller,'unknown',JSON.stringify(unknownUsage));
  }

@@ -260,10 +260,12 @@ namespace
             Profile game; game.id = NewStableId(); game.name=L"Fixture Game"; game.kind=Kind::Application; game.executable=gamePath;
             game.rules.push_back({L"HID\\FIXTURE_PEDALS",L"Fixture pedals",Visibility::Hidden});
             application.Apply(game,std::nullopt);
-            std::atomic_bool running{};
+            std::mutex processMutex; std::vector<ProcessObservation> fixtureProcesses; bool scanUnavailable{};
             CProfilesCoordinator coordinator(enforcement,application.Root(),false,[&]
             {
-                return running.load() ? std::vector<ProcessObservation>{{60001,1,L"FixtureGame.exe",gamePath,true}} : std::vector<ProcessObservation>{};
+                std::lock_guard<std::mutex> lock(processMutex);
+                if (scanUnavailable) throw std::runtime_error("Injected incomplete scan");
+                return fixtureProcesses;
             },{},[] { return false; });
             coordinator.AcceptanceScanNow();
             HidHide::Editor::Service service(application,coordinator,devices);
@@ -297,7 +299,30 @@ namespace
                         }
                         if(command==L"fixture-process")
                         {
-                            running=AsBool(Required(request,L"running")); coordinator.AcceptanceScanNow();
+                            { std::lock_guard<std::mutex> lock(processMutex);
+                              fixtureProcesses = AsBool(Required(request,L"running")) ? std::vector<ProcessObservation>{{60001,1,L"FixtureGame.exe",gamePath,true}} : std::vector<ProcessObservation>{}; }
+                            coordinator.AcceptanceScanNow();
+                            std::string snapshot="{\"command\":\"snapshot\"}"; return service.Handle({snapshot.begin(),snapshot.end()});
+                        }
+                        if(command==L"fixture-processes" || command==L"fixture-timeline")
+                        {
+                            auto set = [&](Json::Object const& sample)
+                            {
+                                std::vector<ProcessObservation> observations;
+                                for (auto const& value : AsArray(Required(sample,L"processes")))
+                                {
+                                    auto const& item=AsObject(value); auto id=AsString(Required(item,L"id"));
+                                    auto const& profile=coordinator.Snapshot().profiles.at(id);
+                                    observations.push_back({static_cast<DWORD>(AsUnsigned(Required(item,L"pid"))),
+                                        AsUnsigned(Required(item,L"created")),profile.executable.filename().native(),profile.executable,true,
+                                        item.count(L"exited") ? AsUnsigned(Required(item,L"exited")) : 0});
+                                }
+                                std::lock_guard<std::mutex> lock(processMutex); fixtureProcesses=std::move(observations);
+                                scanUnavailable=AsBool(Required(sample,L"incomplete"));
+                            };
+                            if(command==L"fixture-timeline")
+                                for(auto const& sample : AsArray(Required(request,L"samples"))) { set(AsObject(sample)); ::Sleep(750); }
+                            else { set(request); coordinator.AcceptanceScanNow(); }
                             std::string snapshot="{\"command\":\"snapshot\"}"; return service.Handle({snapshot.begin(),snapshot.end()});
                         }
                         if(command==L"fixture-launch-witness")
@@ -309,6 +334,13 @@ namespace
                         {
                             enforcement.SetObservationMode(AsBool(Required(request,L"fail"))
                                 ? AcceptanceEnforcement::ObservationMode::Unknown : AcceptanceEnforcement::ObservationMode::Normal);
+                            std::string result="{\"ok\":true}"; return std::vector<std::uint8_t>(result.begin(),result.end());
+                        }
+                        if(command==L"fixture-reconcile-failure")
+                        {
+                            auto fail=AsBool(Required(request,L"fail"));
+                            enforcement.FailReconcile(fail);
+                            enforcement.SetObservationMode(fail ? AcceptanceEnforcement::ObservationMode::Unknown : AcceptanceEnforcement::ObservationMode::Normal);
                             std::string result="{\"ok\":true}"; return std::vector<std::uint8_t>(result.begin(),result.end());
                         }
                     }
@@ -389,12 +421,28 @@ namespace
             if (AsBool(Required(snapshot,L"verified"))) throw std::runtime_error("Unknown driver state was presented as verified");
             for (auto const& device : AsArray(Required(snapshot,L"devices"))) if (AsString(Required(AsObject(device),L"current")) != L"Unknown") throw std::runtime_error("Unknown device state was presented as visible");
             report << "PASS: unknown observed state remains unknown\n";
+            enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Normal);
+            settings = coordinator.Snapshot().settings; settings.paused = false; settings.mode = Mode::UseGlobal;
+            request("{\"command\":\"settings\",\"settings\":"+SerializeSettings(settings)+",\"expectedSettings\":"+versionJson(application.SettingsVersion())+"}");
+            Profile launchProfile; launchProfile.id=NewStableId(); launchProfile.revision=1; launchProfile.name=L"Adoption launch regression";
+            launchProfile.kind=Kind::Application; launchProfile.executable=root/L"AdoptionGame.exe";
+            request("{\"command\":\"apply\",\"profile\":"+SerializeProfile(launchProfile)+",\"expected\":null,\"settings\":"
+                +SerializeSettings(coordinator.Snapshot().settings)+",\"expectedSettings\":"+versionJson(application.SettingsVersion())+"}");
             enforcement.SetAllowedApplications({root/L"FixtureFeeder.exe"});
             enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::KnownConflict); coordinator.ObserveEnforcement();
             auto adoptHash = application.SettingsVersion().sha256;
             auto adoption = request("{\"command\":\"adopt\",\"expectedSettings\":"+versionJson(application.SettingsVersion())+"}");
             if (!AsBool(Required(AsObject(adoption),L"needsApply")) || !coordinator.AdoptionAwaitingSave()
                 || application.SettingsVersion().sha256 != adoptHash || enforcement.Adoptions() != 1) throw std::runtime_error("Driver adoption did not stage Allowed apps without JSON writes");
+            enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Normal);
+            auto adoptWrites = enforcement.Writes();
+            request("{\"command\":\"launch\",\"id\":"+ToUtf8(Escape(launchProfile.id))+",\"expected\":"+versionJson(application.Version(launchProfile.id))
+                +",\"expectedSettings\":"+versionJson(application.SettingsVersion())+"}",false);
+            if (!coordinator.AdoptionAwaitingSave() || application.SettingsVersion().sha256 != adoptHash
+                || coordinator.Snapshot().settings.mode != Mode::UseGlobal || enforcement.Writes() != adoptWrites
+                || !enforcement.Observe().observed.allowedApplications.count(root/L"FixtureFeeder.exe"))
+                throw std::runtime_error("Rejected launch mutated settings or discarded the accepted external baseline");
+            report << "PASS: launch through production service preserves pending adoption and Use Global settings\n";
             request("{\"command\":\"abandon-adoption\"}");
             if (coordinator.AdoptionAwaitingSave() || application.SettingsVersion().sha256 != adoptHash) throw std::runtime_error("Adoption discard modified the saved catalog");
             enforcement.SetObservationMode(AcceptanceEnforcement::ObservationMode::Normal);

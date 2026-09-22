@@ -128,6 +128,8 @@ CProfilesCoordinator::~CProfilesCoordinator() { Stop(); }
 
 void CProfilesCoordinator::SubmitSnapshot()
 {
+    std::lock_guard<std::mutex> scanLock(m_ScanMutex);
+    m_Activations.Update(m_Snapshot, {}, false);
     std::lock_guard<std::mutex> lock(m_WorkerMutex); m_PendingSnapshot = m_Snapshot; ++m_SubmittedRevision; m_WorkerWake.notify_one();
 }
 
@@ -135,27 +137,75 @@ CProfilesCoordinator::ScanResult CProfilesCoordinator::Scan(HidHide::Profiles::S
 {
     std::lock_guard<std::mutex> scanLock(m_ScanMutex);
     ScanResult result;
-    if (snapshot.settings.mode != HidHide::Profiles::Mode::Automatic || snapshot.settings.paused) { result.selection = HidHide::Profiles::SelectWinner(snapshot, {}); return result; }
+    // A retired worker snapshot must neither rewrite history nor prune handles
+    // belonging to the newly saved catalog.
+    { std::lock_guard<std::mutex> lock(m_WorkerMutex);
+      if (snapshot.generation != m_PendingSnapshot.generation) { result.complete = false; return result; } }
+    m_ObservedProcesses.Retain(snapshot);
     std::map<std::wstring, bool> candidates;
     for (auto const& [id, profile] : snapshot.profiles) if (profile.kind == HidHide::Profiles::Kind::Application && profile.enabled)
         candidates[Lower(profile.executable.filename().native())] = true;
-    if (candidates.empty()) { result.selection = HidHide::Profiles::SelectWinner(snapshot, {}); return result; }
+    auto finish = [&]()
+    {
+        // Owned launch handles provide lifetime identity even if discovery is
+        // temporarily late. Successful launches still participate normally.
+        for (auto handle : m_OwnedProcesses)
+        {
+            if (::WaitForSingleObject(handle, 0) != WAIT_TIMEOUT) continue;
+            auto pid = ::GetProcessId(handle); auto lifetime = ProcessLifetime(handle);
+            if (std::any_of(result.processes.begin(), result.processes.end(), [&](auto const& p) { return p.processId == pid && p.lifetimeIdentity == lifetime; })) continue;
+            std::vector<wchar_t> path(32768); DWORD size = static_cast<DWORD>(path.size());
+            if (!::QueryFullProcessImageNameW(handle, 0, path.data(), &size) || !lifetime) { result.complete = false; continue; }
+            std::filesystem::path verified(std::wstring(path.data(), size));
+            result.processes.push_back({ pid, lifetime, verified.filename().native(), verified, true });
+            auto key = std::make_pair(pid, lifetime);
+            if (m_ObservedProcesses.Relevant(result.processes.back()) && !m_ObservedProcesses.Contains(key.first, key.second))
+            {
+                HANDLE retained{};
+                if (::DuplicateHandle(::GetCurrentProcess(), handle, ::GetCurrentProcess(), &retained, 0, FALSE, DUPLICATE_SAME_ACCESS))
+                    m_ObservedProcesses.Remember(retained, result.processes.back());
+                else result.complete = false;
+            }
+        }
+        // Never let a stale worker catalog rewrite history after a save.
+        std::lock_guard<std::mutex> lock(m_WorkerMutex);
+        if (snapshot.generation != m_PendingSnapshot.generation) { result.complete = false; return result; }
+        if (!m_ObservedProcesses.Collect(result.processes)) result.complete = false;
+        for (auto const& process : result.processes)
+            if (!process.pathAccessible || process.verifiedPath.empty() || !process.lifetimeIdentity) result.complete = false;
+        auto eligible = snapshot;
+        if (!m_ProcessSource) for (auto& [id, profile] : eligible.profiles)
+            if (profile.kind == HidHide::Profiles::Kind::Application && profile.enabled
+                && ::GetFileAttributesW(profile.executable.c_str()) == INVALID_FILE_ATTRIBUTES)
+            {
+                auto error = ::GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                { profile.enabled = false; result.missingProfiles.insert(id); }
+                else result.complete = false;
+            }
+        m_ObservedProcesses.Retain(eligible);
+        if (result.complete) m_ObservedProcesses.AppendExited(result.processes);
+        m_Activations.Update(eligible, result.processes, result.complete);
+        if (result.complete) m_ObservedProcesses.ConsumeExited();
+        m_LastScanComplete = result.complete;
+        result.selection = m_Activations.Select(snapshot);
+        for (auto const& id : m_Activations.Running()) result.runningProfiles.insert(id);
+        return result;
+    };
+    if (candidates.empty()) return finish();
     if (m_ProcessSource)
     {
         try { result.processes = m_ProcessSource(); }
-        catch (...) { result.complete = false; return result; }
-        for (auto const& [id, profile] : snapshot.profiles) if (profile.kind == HidHide::Profiles::Kind::Application)
-            for (auto const& process : result.processes) if (process.pathAccessible && !process.verifiedPath.empty()
-                && _wcsicmp(HidHide::Profiles::NormalizeExecutable(process.verifiedPath).c_str(), profile.executable.c_str()) == 0) { result.runningProfiles.emplace(id); break; }
-        result.selection = HidHide::Profiles::SelectWinner(snapshot, result.processes); return result;
+        catch (...) { result.complete = false; return finish(); }
+        return finish();
     }
-    HANDLE processes = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); if (processes == INVALID_HANDLE_VALUE) { result.complete = false; return result; }
+    HANDLE processes = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); if (processes == INVALID_HANDLE_VALUE) { result.complete = false; return finish(); }
     PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
     if (::Process32FirstW(processes, &entry)) do
     {
         if (!candidates.count(Lower(entry.szExeFile))) continue;
         HidHide::Profiles::ProcessObservation observation; observation.processId = entry.th32ProcessID; observation.fileName = entry.szExeFile;
-        HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+        HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, entry.th32ProcessID);
         if (!process) observation.pathAccessible = false;
         else
         {
@@ -167,45 +217,39 @@ CProfilesCoordinator::ScanResult CProfilesCoordinator::Scan(HidHide::Profiles::S
                 if (::QueryFullProcessImageNameW(process, 0, path.data(), &size) && size && size < path.size()) { observation.verifiedPath = std::wstring(path.data(), size); m_ProcessCache.Remember(observation); }
                 else observation.pathAccessible = false;
             }
-            ::CloseHandle(process);
+            if (observation.lifetimeIdentity && observation.pathAccessible && !observation.verifiedPath.empty())
+            {
+                m_ObservedProcesses.Remember(process, observation); process = nullptr;
+            }
+            if (process) ::CloseHandle(process);
         }
         result.processes.emplace_back(std::move(observation));
     } while (::Process32NextW(processes, &entry));
     if (::GetLastError() != ERROR_NO_MORE_FILES) result.complete = false; ::CloseHandle(processes); m_ProcessCache.Retain(result.processes);
-    for (auto const& [id, profile] : snapshot.profiles) if (profile.kind == HidHide::Profiles::Kind::Application)
-        for (auto const& process : result.processes) if (process.pathAccessible && !process.verifiedPath.empty()
-            && _wcsicmp(HidHide::Profiles::NormalizeExecutable(process.verifiedPath).c_str(), profile.executable.c_str()) == 0) { result.runningProfiles.emplace(id); break; }
-    result.selection = HidHide::Profiles::SelectWinner(snapshot, result.processes); return result;
+    return finish();
+}
+
+bool CProfilesCoordinator::CanReconcileScan(bool complete) const
+{
+    // Keep tracking history in every mode. Explicit Global and Pause do not
+    // depend on application discovery; normal enforcement guards still apply.
+    return complete || m_Snapshot.settings.paused || m_Snapshot.settings.mode == HidHide::Profiles::Mode::UseGlobal;
 }
 
 void CProfilesCoordinator::WorkerMain() noexcept
 {
     try
     {
-        std::unique_lock<std::mutex> lock(m_WorkerMutex); std::uint64_t revision{}; HidHide::Profiles::Snapshot snapshot; std::set<std::wstring> missingProfiles;
+        std::unique_lock<std::mutex> lock(m_WorkerMutex); std::uint64_t revision{}; HidHide::Profiles::Snapshot snapshot;
         while (!m_StopRequested)
         {
-            auto active = snapshot.settings.mode == HidHide::Profiles::Mode::Automatic && !snapshot.settings.paused
-                && std::any_of(snapshot.profiles.begin(), snapshot.profiles.end(), [](auto const& item) { return item.second.kind == HidHide::Profiles::Kind::Application && item.second.enabled; });
+            auto active = std::any_of(snapshot.profiles.begin(), snapshot.profiles.end(), [](auto const& item) { return item.second.kind == HidHide::Profiles::Kind::Application && item.second.enabled; });
             if (active) m_WorkerWake.wait_for(lock, std::chrono::milliseconds(500), [&] { return m_StopRequested || revision != m_SubmittedRevision; });
             else m_WorkerWake.wait(lock, [&] { return m_StopRequested || revision != m_SubmittedRevision; });
             if (m_StopRequested) break;
-            bool refreshMissing{};
-            if (revision != m_SubmittedRevision)
-            {
-                snapshot = m_PendingSnapshot; revision = m_SubmittedRevision; missingProfiles.clear(); refreshMissing = true;
-            }
-            lock.unlock(); bool pathStateComplete{ true };
-            if (refreshMissing)
-            {
-                for (auto const& [id, profile] : snapshot.profiles) if (profile.kind == HidHide::Profiles::Kind::Application && profile.enabled)
-                {
-                    if (::GetFileAttributesW(profile.executable.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
-                    auto error = ::GetLastError(); if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) missingProfiles.emplace(id);
-                    else pathStateComplete = false;
-                }
-            }
-            auto result = Scan(snapshot); result.complete = result.complete && pathStateComplete; result.revision = revision; result.missingProfiles = missingProfiles; lock.lock();
+            if (revision != m_SubmittedRevision) { snapshot = m_PendingSnapshot; revision = m_SubmittedRevision; }
+            lock.unlock();
+            auto result = Scan(snapshot); result.revision = revision; lock.lock();
             if (m_StopRequested || revision != m_SubmittedRevision) continue;
             bool changed = revision != m_LastPublishedRevision || result.complete != m_LastPublishedComplete
                 || !m_LastPublishedSelection || result.selection != *m_LastPublishedSelection
@@ -298,7 +342,8 @@ void CProfilesCoordinator::SetVerifiedSelection(HidHide::Profiles::Selection con
 {
     m_Selection = selection; m_Conflict = false; m_AdoptedNeedsApply = false; m_EffectiveVerified = true;
     m_Status = m_Snapshot.settings.paused ? L"Hiding paused — selected Global retained; all devices are visible"
-        : selection.reason == HidHide::Profiles::SelectionReason::Application ? L"Running application profile applied and verified"
+        : selection.reason == HidHide::Profiles::SelectionReason::ManualApplication ? L"Manual override mask applied and verified"
+        : selection.reason == HidHide::Profiles::SelectionReason::Application ? L"Most recently activated running application mask applied and verified"
         : selection.reason == HidHide::Profiles::SelectionReason::ManualGlobal ? L"Manual Global policy applied and verified (Use Global)"
         : selection.reason == HidHide::Profiles::SelectionReason::DetectionUncertain ? L"Automatic Global fallback applied; a same-name executable path could not be verified"
         : L"Automatic Global fallback applied and verified";
@@ -329,7 +374,8 @@ CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::PublishSaved(HidHide::P
             catch (std::exception const& error) { m_StartupIssue = L"Startup integration failed: " + std::wstring(error.what(), error.what() + strlen(error.what())); }
         }
         auto Finish = [&](ApplyOutcome outcome) { if (!m_StartupIssue.empty()) outcome.message += L" " + m_StartupIssue; return outcome; };
-        auto scan = Scan(m_Snapshot); if (!scan.complete) return Finish({ true, false, false, L"Saved. Process detection is unavailable; device visibility was retained.", version });
+        auto scan = Scan(m_Snapshot); if (!CanReconcileScan(scan.complete)) return Finish({ true, false, false, L"Saved. Process detection is unavailable; device visibility was retained.", version });
+        m_RunningProfiles = scan.runningProfiles; m_MissingProfiles = scan.missingProfiles;
         auto previousDesired = Desired(previousSnapshot, previousSelection);
         auto nextDesired = Desired(m_Snapshot, scan.selection);
         if (!recoveringInvalidRepository && previousDesired == nextDesired)
@@ -352,16 +398,41 @@ CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::PublishSaved(HidHide::P
 
 CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::RetryActivation()
 {
-    if (HasLaunchedProcess()) return { false, false, m_EffectiveVerified, L"A directly launched application holds its verified profile until that process exits.", {} };
-    auto scan = Scan(m_Snapshot); if (!scan.complete) return { false, false, false, L"Retry could not verify running processes; last verified visibility was retained.", {} };
+    if (m_LaunchUncertain && HasLaunchedProcess()) return { false, false, m_EffectiveVerified, L"A directly launched application holds its verified profile until that process exits.", {} };
+    auto scan = Scan(m_Snapshot); if (!CanReconcileScan(scan.complete)) return { false, false, false, L"Retry could not verify running processes; last verified visibility was retained.", {} };
     m_RunningProfiles = scan.runningProfiles; m_MissingProfiles = scan.missingProfiles;
     return Reconcile(scan.selection, false, {});
 }
 
-std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
+bool CProfilesCoordinator::HasLaunchedProcess() const
 {
-    if (HasLaunchedProcess()) throw std::runtime_error("Close the directly launched application before launching another profile");
-    if (m_LaunchedProcess) { ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false; }
+    if (m_LaunchedProcess && ::WaitForSingleObject(m_LaunchedProcess, 0) != WAIT_OBJECT_0) return true;
+    return std::any_of(m_OwnedProcesses.begin(), m_OwnedProcesses.end(), [](HANDLE process) { return ::WaitForSingleObject(process, 0) != WAIT_OBJECT_0; });
+}
+std::vector<std::wstring> CProfilesCoordinator::RunningOrder() const
+{ std::lock_guard<std::mutex> lock(m_ScanMutex); return m_Activations.Running(); }
+std::wstring CProfilesCoordinator::ManualMaskId() const
+{ std::lock_guard<std::mutex> lock(m_ScanMutex); return m_Activations.Pin(); }
+HidHide::Profiles::Selection CProfilesCoordinator::RequestedSelection() const
+{ std::lock_guard<std::mutex> lock(m_ScanMutex); return m_Activations.Select(m_Snapshot); }
+CProfilesCoordinator::ApplyOutcome CProfilesCoordinator::SelectMask(std::wstring const& id)
+{
+    if (m_RepositoryInvalid || m_Conflict || m_AdoptedNeedsApply || m_LaunchUncertain)
+        throw std::runtime_error("Resolve repository, driver, or launch recovery before choosing a mask");
+    if (m_Snapshot.settings.paused || m_Snapshot.settings.mode != HidHide::Profiles::Mode::Automatic)
+        throw std::runtime_error("Apply Automatic mode with hiding enabled before choosing an application mask");
+    auto scan = Scan(m_Snapshot);
+    if (!scan.complete) throw std::runtime_error("Running applications could not be verified; mask selection was retained");
+    { std::lock_guard<std::mutex> lock(m_ScanMutex); m_Activations.SetPin(id); scan.selection = m_Activations.Select(m_Snapshot); }
+    m_RunningProfiles = scan.runningProfiles;
+    auto result = Reconcile(scan.selection, false);
+    SubmitSnapshot();
+    return result;
+}
+
+void CProfilesCoordinator::ValidateLaunch(std::wstring const& id, DWORD ownPid)
+{
+    if (m_LaunchUncertain && HasLaunchedProcess()) throw std::runtime_error("Resolve the uncertain application launch before launching another profile");
     if (m_RepositoryInvalid || m_Conflict || m_AdoptedNeedsApply || m_Snapshot.settings.paused || !m_Issues.empty())
         throw std::runtime_error("Resolve profile, driver, or paused-hiding state before launching an application");
     try { if (m_MaintenanceSource()) throw std::runtime_error("Setup maintenance is active; application launch is blocked"); }
@@ -382,24 +453,27 @@ std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
             throw std::runtime_error("This application is in Allowed apps and can read hidden devices; remove that exception before launch");
     }
 
-    // The automatic scanner normally skips work in Use Global mode. For launch,
-    // inspect the target regardless: an existing process may retain an old handle.
+    // Revalidate the target around suspended creation: an existing process
+    // may retain an old physical-device handle.
     auto scanSnapshot = m_Snapshot; scanSnapshot.settings.mode = HidHide::Profiles::Mode::Automatic;
     scanSnapshot.settings.paused = false;
-    auto checkExisting = [&](DWORD ownPid)
+    auto scan = Scan(scanSnapshot);
+    if (!scan.complete) throw std::runtime_error("Process discovery is unavailable; application launch is blocked");
+    for (auto const& process : scan.processes)
     {
-        auto scan = Scan(scanSnapshot);
-        if (!scan.complete) throw std::runtime_error("Process discovery is unavailable; application launch is blocked");
-        for (auto const& process : scan.processes)
-        {
-            if (process.processId == ownPid || _wcsicmp(process.fileName.c_str(), executable.filename().c_str()) != 0) continue;
-            if (!process.pathAccessible || process.verifiedPath.empty())
-                throw std::runtime_error("A same-name process cannot be identified; close it before launching this profile");
-            if (_wcsicmp(HidHide::Profiles::NormalizeExecutable(process.verifiedPath).c_str(), executable.c_str()) == 0)
-                throw std::runtime_error("This application is already running and may hold physical devices; close it before launching through HidHide Profiles");
-        }
-    };
-    checkExisting(0);
+        if (process.exitedAt || process.processId == ownPid || _wcsicmp(process.fileName.c_str(), executable.filename().c_str()) != 0) continue;
+        if (!process.pathAccessible || process.verifiedPath.empty())
+            throw std::runtime_error("A same-name process cannot be identified; close it before launching this profile");
+        if (_wcsicmp(HidHide::Profiles::NormalizeExecutable(process.verifiedPath).c_str(), executable.c_str()) == 0)
+            throw std::runtime_error("This application is already running and may hold physical devices; close it before launching through HidHide Profiles");
+    }
+}
+
+std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id, std::function<void(bool)> const& changeMode)
+{
+    ValidateLaunch(id);
+    if (m_LaunchedProcess) { ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false; }
+    auto executable = HidHide::Profiles::NormalizeExecutable(m_Snapshot.profiles.at(id).executable);
     std::wstring launchId = id;
     auto process = DirectLauncher::Create(executable);
     auto close = [&] { if (process.thread) ::CloseHandle(process.thread); if (process.process) ::CloseHandle(process.process); };
@@ -408,7 +482,13 @@ std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
         if (!process.process || !process.thread || !process.processId
             || _wcsicmp(HidHide::Profiles::NormalizeExecutable(DirectLauncher::Path(process)).c_str(), executable.c_str()) != 0)
             throw std::runtime_error("The suspended process did not match the saved executable path");
-        checkExisting(process.processId);
+        ValidateLaunch(id, process.processId);
+        changeMode(true);
+        // Saving can publish a new snapshot or expose an enforcement failure.
+        // Recheck every launch gate before applying the suspended child's mask.
+        ValidateLaunch(id, process.processId);
+        if (m_Snapshot.settings.mode != HidHide::Profiles::Mode::Automatic)
+            throw std::runtime_error("Automatic mode could not be saved before launch");
         HidHide::Profiles::Selection selected{ id, HidHide::Profiles::SelectionReason::Application, executable.filename().native(), true };
         auto applied = Reconcile(selected, false);
         if (!applied.applied || !m_EffectiveVerified)
@@ -419,14 +499,16 @@ std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
             m_EffectiveVerified = false; if (observed.conflict) m_Conflict = true;
             throw std::runtime_error("Driver readback changed before launch; the suspended application was stopped");
         }
-        std::wstring successStatus = L"Directly launched application profile applied and verified; held until that process exits";
-        std::wstring successMessage = L"Application launched after its complete profile was verified. The profile remains held while this process runs.";
+        std::wstring successStatus = L"Application mask verified before launch; Automatic selection is active";
+        std::wstring successMessage = L"Application launched after its complete profile was verified. Automatic selection is active; a newer application may replace this mask.";
+        { std::lock_guard<std::mutex> lock(m_ScanMutex); m_OwnedProcesses.reserve(m_OwnedProcesses.size() + 1); }
         if (!DirectLauncher::Resume(process)) throw std::runtime_error("The verified application could not be resumed");
-        m_LaunchedProcess = process.process; process.process = nullptr;
-        m_LaunchedProfileId.swap(launchId);
+        { std::lock_guard<std::mutex> lock(m_ScanMutex);
+          m_OwnedProcesses.push_back(process.process); process.process = nullptr; m_Activations.SetPin({}); }
         m_LaunchUncertain = false;
         m_Status.swap(successStatus);
         close();
+        try { SubmitSnapshot(); (void)RetryActivation(); } catch (...) { m_EffectiveVerified = false; }
         return successMessage;
     }
     catch (...)
@@ -443,6 +525,20 @@ std::wstring CProfilesCoordinator::LaunchSavedProfile(std::wstring const& id)
             throw std::runtime_error("Application start is uncertain; its profile remains held until the process exits");
         }
         close(); m_LaunchedProfileId.clear(); m_LaunchUncertain = false;
+        try { changeMode(false); }
+        catch (...)
+        {
+            // Do not silently reconcile a stale snapshot if the compensating
+            // CAS save failed. Preserve diagnostics and require explicit retry.
+            (void)ReloadRepositoryIfChanged(); m_EffectiveVerified = false;
+            m_Status = L"Application was stopped, but its previous mode could not be restored; review saved settings";
+            try { std::rethrow_exception(failure); }
+            catch (std::exception const& launchFailure)
+            {
+                throw std::runtime_error(std::string(launchFailure.what())
+                    + ". Application was stopped, but its previous mode could not be restored; review saved settings");
+            }
+        }
         // The prelaunch policy may have reached the driver. Restore the current
         // automatic/Global selection if it can be verified, or retain evidence.
         try { (void)RetryActivation(); } catch (...) { m_EffectiveVerified = false; }
@@ -481,18 +577,25 @@ void CProfilesCoordinator::Tick()
         { std::lock_guard<std::mutex> lock(m_WorkerMutex); m_AppliedSequence = m_CompletedSequence; }
         (void)RetryActivation(); return;
     }
+    { std::lock_guard<std::mutex> lock(m_ScanMutex);
+      for (auto it = m_OwnedProcesses.begin(); it != m_OwnedProcesses.end();)
+        if (::WaitForSingleObject(*it, 0) == WAIT_OBJECT_0) { ::CloseHandle(*it); it = m_OwnedProcesses.erase(it); } else ++it; }
     ScanResult result; std::uint64_t sequence{};
     { std::lock_guard<std::mutex> lock(m_WorkerMutex); if (m_WorkerFailed) { m_Status = L"Process monitoring stopped"; return; } if (m_AppliedSequence == m_CompletedSequence) return; result = m_Completed; sequence = m_CompletedSequence; if (result.revision != m_SubmittedRevision) return; }
+    // Every sample advances history, including samples superseded before Tick.
+    { std::lock_guard<std::mutex> lock(m_ScanMutex);
+      result.selection = m_Activations.Select(m_Snapshot); result.complete = m_LastScanComplete;
+      result.runningProfiles.clear(); for (auto const& id : m_Activations.Running()) result.runningProfiles.insert(id); }
     m_RunningProfiles = result.runningProfiles; m_MissingProfiles = result.missingProfiles;
-    if (!result.complete) { m_EffectiveVerified = false; m_Status = L"Process detection is unavailable; last verified device visibility was retained"; }
+    if (!CanReconcileScan(result.complete)) { m_EffectiveVerified = false; m_Status = L"Process detection is unavailable; last verified device visibility was retained"; }
     else Reconcile(result.selection, false);
     m_AppliedSequence = sequence;
 }
 
 bool CProfilesCoordinator::AcceptanceScanNow()
 {
-    if (HasLaunchedProcess()) return ObserveEnforcement().success && m_EffectiveVerified;
-    auto scan = Scan(m_Snapshot); if (!scan.complete) return false;
+    if (m_LaunchUncertain && HasLaunchedProcess()) return ObserveEnforcement().success && m_EffectiveVerified;
+    auto scan = Scan(m_Snapshot); if (!CanReconcileScan(scan.complete)) return false;
     m_RunningProfiles = scan.runningProfiles; m_MissingProfiles = scan.missingProfiles;
     auto outcome = Reconcile(scan.selection, false); return outcome.applied && m_RepositoryWrites == 0;
 }
@@ -553,6 +656,8 @@ void CProfilesCoordinator::Stop() noexcept
 {
     { std::lock_guard<std::mutex> lock(m_WorkerMutex); if (m_StopRequested) return; m_StopRequested = true; } m_WorkerWake.notify_one(); if (m_WatcherStop) ::SetEvent(m_WatcherStop); if (m_Worker.joinable()) m_Worker.join(); if (m_RepositoryWatcher.joinable()) m_RepositoryWatcher.join(); if (m_WatcherStop) { ::CloseHandle(m_WatcherStop); m_WatcherStop = nullptr; }
     try { ExitSafely(); } catch (...) {}
+    for (auto process : m_OwnedProcesses) ::CloseHandle(process); m_OwnedProcesses.clear();
+    m_ObservedProcesses.Clear();
     if (m_LaunchedProcess) { ::CloseHandle(m_LaunchedProcess); m_LaunchedProcess = nullptr; m_LaunchedProfileId.clear(); m_LaunchUncertain = false; }
 }
 

@@ -40,9 +40,20 @@ The public MSI contains `HidHideClient.exe`, `HidHideCLI.exe`, app-local runtime
 Profiles are the configuration utility's main workspace. Each saved profile is a complete visibility
 policy: devices default to Visible, and exact device identities can be marked Hidden
 or explicitly Visible. Application profiles activate only for an exact verified
-executable path. The highest priority running application wins, with stable profile
-ID as the tie-break; when none matches, the selected Global profile wins. Selecting
-a row only opens its detached editor. Nothing is saved or activated until **Apply**.
+executable path and process lifetime. In Automatic, the most recently activated
+still-running application profile supplies the single global mask. A starts, then
+B, then C: C wins; closing C restores B, closing B restores A, and closing A restores
+the selected Global. Additional instances do not promote a profile. Same-scan
+activations use process creation time, then priority and stable ID for ties.
+Editing, refreshing, or focusing a window never promotes a profile.
+
+The **Active mask** chooser lists running profiles newest first. **Use this mask**
+pins the saved mask until **Return to Automatic**, the application's last process
+exits, or its saved eligibility changes. New applications continue entering the
+history under a pin. Use Global and Pause clear the pin while history continues.
+Pins and activation order are runtime only; restarting the engine reconstructs order
+from running process creation times. Selecting a profile row only opens its detached
+editor. Runtime mask commands preserve unsaved drafts; **Apply changes** saves edits.
 
 The signed driver remains machine-global, so the effective profile affects every
 non-whitelisted application. Allowed apps are a global exemption managed alongside
@@ -68,8 +79,9 @@ For reliable hiding at application startup, configure and Apply the complete Glo
 profile, select **Use Global**, verify it is active, and then start the game. Alternatively,
 save an enabled application profile and use **Launch with profile** in its editor card:
 the ordinary-user coordinator starts that exact executable suspended, applies and reads
-back its complete policy, then resumes it and holds that profile until the launched
-process exits while the coordinator remains active. It rejects an already-running
+back its complete policy, then resumes it as an ordinary new activation. Launch
+returns to Automatic and clears a manual override; newer applications can replace
+its mask, and fallback includes every still-running application. It rejects an already-running
 target because existing handles may remain usable. Keep the game out of Allowed
 apps, and keep feeder utilities that must read
 physical devices in Allowed apps. Merely applying an inactive application profile saves
@@ -78,7 +90,7 @@ policy replaces the former permanent Devices selection; there is no second devic
 to combine with it. Reconnect devices after configuration changes when the UI directs it.
 
 The coordinator uses coalesced process scans while enabled application profiles can
-match, stops scanning in Use Global/paused/no-application states, and posts only
+match, including Use Global and Pause, stops when no enabled applications exist, and posts only
 semantic changes to the UI. Its scan interval is not a deadline: scheduling,
 configuration dialogs, and errors can delay application of a detected profile. Starting the
 manager first, automatic sign-in startup, or a profile showing *Running* does not establish that hiding preceded a game's
@@ -88,10 +100,11 @@ verify the required Global policy or use **Launch with profile**, and then start
 waiting for detection does not repair an existing handle. The direct launch action does
 not cover a launcher that hands off to another process, a child after its parent exits,
 or a game started elsewhere. It launches the saved executable without extra arguments.
-While that process runs, profile edits and setup maintenance are blocked; tray Exit
-explicitly restores the baseline and ends monitoring. A coordinator crash or restart
-also ends the hold, so a running game must be closed and launched again through
-the verified path after recovery.
+Successful launches allow normal profile edits and multiple launched applications.
+Setup maintenance remains blocked while an owned launched process is alive. An
+uncertain launch failure conservatively holds the last policy until that process
+exits. Tray Exit restores baseline and stops monitoring. Restart reconstructs
+automatic selection; it cannot repair handles already opened by a running game.
 
 This activation contract is based on source inspection and isolated process fixtures,
 not live verification against an installed signed driver.

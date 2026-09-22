@@ -58,3 +58,6 @@ button,input,select,.segments,.search{border-color:var(--control-line)}
 
 .application-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}.application-actions .field{flex:1;min-width:150px;margin:0}.running-applications{max-height:240px;overflow:auto;display:grid;gap:6px}.running-applications button,.selected-application{display:flex;align-items:center;gap:12px;text-align:left;padding:12px;min-width:0}.running-applications button span,.selected-application span{min-width:0}.running-applications small,.selected-application small{display:block;overflow-wrap:anywhere}.running-applications [aria-pressed=true]{border-color:var(--accent)}
 .running-applications button{justify-content:flex-start}
+
+.mask-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;padding:10px 0}.mask-controls label{display:flex;align-items:center;gap:8px}.mask-controls small{flex-basis:100%}
+.engine-bar{flex-wrap:wrap;row-gap:12px}.mask-controls{order:3;border-top:1px solid var(--line);padding:12px 0 0;min-width:0}.mask-controls label{flex-wrap:wrap;min-width:0;max-width:100%}.mask-controls select{width:260px;max-width:100%}.mask-controls small{overflow-wrap:anywhere}

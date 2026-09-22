@@ -209,9 +209,12 @@ namespace HidHide::Editor
         }
         auto displaySettings = snapshot.settings; if (!displaySettings.revision) displaySettings.revision = 1;
         if (!IsStableId(displaySettings.selectedGlobalId) && !snapshot.profiles.empty()) displaySettings.selectedGlobalId = snapshot.profiles.begin()->first;
+        Array runningOrder; for (auto const& id : m_Coordinator.RunningOrder()) runningOrder.push_back(Text(id));
         return Value{Object{{L"profiles", Value{std::move(profiles)}}, {L"settings", Decode(SerializeSettings(displaySettings))}, {L"settingsVersion", std::move(settingsVersion)},
             {L"activeId", Text(m_Coordinator.EffectiveSelection().profileId)}, {L"verified", Value{m_Coordinator.EffectiveSelectionVerified()}},
-            {L"launchedId", Text(m_Coordinator.HasLaunchedProcess() ? m_Coordinator.LaunchedProfileId() : L"")},
+            {L"launchedId", Text(m_Coordinator.LaunchUncertain() ? m_Coordinator.LaunchedProfileId() : L"")},
+            {L"runningOrder", Value{std::move(runningOrder)}}, {L"manualMaskId", Text(m_Coordinator.ManualMaskId())},
+            {L"requestedId", Text(m_Coordinator.RequestedSelection().profileId)},
             {L"status", Text(m_Coordinator.Status())}, {L"conflict", Value{m_Coordinator.HasDriverConflict()}}, {L"repositoryIssues", Value{std::move(issues)}},
             {L"devices", Value{std::move(devices)}}, {L"deviceError", Text(deviceError)}, {L"repositoryPath", Text(m_Application.Root().native())},
             {L"adoptionAwaitingSave", Value{m_Coordinator.AdoptionAwaitingSave()}},
@@ -243,6 +246,23 @@ namespace HidHide::Editor
         auto expectedSettings = [&] { return Expected(Required(request, L"expectedSettings")); };
         auto publish = [&](ProfileApplicationService::SavedChange change, wchar_t const* action)
         { return Outcome(m_Coordinator.PublishSaved(std::move(change.loaded), change.version, action, change.cleanupPending)); };
+        if (command == L"mask" || command == L"automatic")
+        {
+            WriterLease lease(m_Application.Root());
+            m_Coordinator.ReloadRepositoryIfChanged(); m_Coordinator.Tick();
+            auto expected = expectedSettings(); auto current = m_Application.SettingsVersion();
+            if (expected.revision != current.revision || expected.sha256 != current.sha256)
+                throw RepositoryConflict("Saved settings changed; refresh before selecting a mask");
+            std::wstring id;
+            if (command == L"mask")
+            {
+                id = AsString(Required(request, L"id"));
+                auto profileExpected = Expected(Required(request, L"expected")); auto profileCurrent = m_Application.Version(id);
+                if (profileExpected.revision != profileCurrent.revision || profileExpected.sha256 != profileCurrent.sha256)
+                    throw RepositoryConflict("Saved profile changed; refresh before selecting its mask");
+            }
+            return Outcome(m_Coordinator.SelectMask(id));
+        }
         if (command == L"launch")
         {
             WriterLease lease(m_Application.Root());
@@ -254,12 +274,44 @@ namespace HidHide::Editor
             if (expected.revision != current.revision || expected.sha256 != current.sha256
                 || settingsExpected.revision != settingsCurrent.revision || settingsExpected.sha256 != settingsCurrent.sha256)
                 throw RepositoryConflict("Saved profile or Allowed apps changed; refresh before launching");
-            auto message = m_Coordinator.LaunchSavedProfile(id);
+            auto previousSettings = m_Coordinator.Snapshot().settings;
+            std::optional<SavedVersion> launchSettingsVersion;
+            bool modeSaveAttempted{};
+            // The coordinator invokes this only after suspended creation and
+            // identity verification, and rolls back only after confirmed abort.
+            // Keep both writes on the ordinary CAS application-service path.
+            auto changeMode = [&](bool automatic)
+            {
+                if (previousSettings.mode == Mode::Automatic) return;
+                if (!automatic && !launchSettingsVersion)
+                {
+                    if (modeSaveAttempted)
+                    {
+                        auto live = m_Application.SettingsVersion();
+                        if (live.revision != settingsCurrent.revision || live.sha256 != settingsCurrent.sha256)
+                            throw std::runtime_error("The failed mode save has an unknown durable outcome; review saved settings");
+                    }
+                    return;
+                }
+                auto settings = previousSettings;
+                if (automatic) settings.mode = Mode::Automatic;
+                if (automatic) modeSaveAttempted = true;
+                auto changed = m_Application.ApplySettings(settings, automatic ? settingsCurrent : *launchSettingsVersion);
+                if (automatic) launchSettingsVersion = changed.version;
+                (void)m_Coordinator.PublishSaved(std::move(changed.loaded), changed.version,
+                    automatic ? L"Automatic mode" : L"Previous launch mode", changed.cleanupPending);
+                auto const& published = m_Coordinator.SettingsVersion();
+                if (published.revision != changed.version.revision || published.sha256 != changed.version.sha256
+                    || m_Coordinator.Snapshot().settings.mode != settings.mode)
+                    throw std::runtime_error("Saved launch mode could not be published; review saved settings");
+                if (!automatic) launchSettingsVersion.reset();
+            };
+            auto message = m_Coordinator.LaunchSavedProfile(id, changeMode);
             return Value{Object{{L"ok", Value{true}}, {L"message", Text(message)}}};
         }
-        if (m_Coordinator.HasLaunchedProcess() && (command == L"apply" || command == L"settings" || command == L"delete"
+        if (m_Coordinator.LaunchUncertain() && (command == L"apply" || command == L"settings" || command == L"delete"
             || command == L"restore" || command == L"adopt" || command == L"abandon-adoption"))
-            throw std::runtime_error("Close the directly launched application before changing profile settings");
+            throw std::runtime_error("Resolve the uncertain application launch before changing profile settings");
         if (command == L"adopt")
         {
             WriterLease lease(m_Application.Root()); auto expected = expectedSettings(); auto live = m_Application.SettingsVersion();

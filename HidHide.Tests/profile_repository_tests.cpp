@@ -3,6 +3,7 @@
 #include "ProfileRepository.h"
 #include "ProfileApplicationService.h"
 #include "ProfileRecovery.h"
+#include "ProfileProcessLifetime.h"
 #include "FilterDriverProxy.h"
 #include <future>
 #include <iostream>
@@ -179,7 +180,7 @@ namespace
 
 }
 
-TEST(ProfilePolicy, WinnerPriorityStableTieExitFallbackManualAndPause)
+TEST(ProfilePolicy, RestartCreationTimeExitFallbackManualAndPause)
 {
     auto globalId = L"00000000-0000-0000-0000-000000000001";
     Snapshot snapshot; snapshot.settings = { 1, globalId, Mode::Automatic, false, true, {} };
@@ -192,7 +193,7 @@ TEST(ProfilePolicy, WinnerPriorityStableTieExitFallbackManualAndPause)
         { 1, 101, L"F1_25.exe", L"C:\\Games\\F1_25.exe", true },
         { 2, 102, L"LMU.exe", L"D:\\Games\\LMU.exe", true },
         { 3, 103, L"AC.exe", L"E:\\Games\\AC.exe", true } };
-    EXPECT_EQ(tiedFirst.id, SelectWinner(snapshot, processes).profileId);
+    EXPECT_EQ(tiedSecond.id, SelectWinner(snapshot, processes).profileId);
     processes.erase(processes.begin() + 1); EXPECT_EQ(tiedSecond.id, SelectWinner(snapshot, processes).profileId);
     processes.clear(); EXPECT_EQ(globalId, SelectWinner(snapshot, processes).profileId);
     snapshot.settings.mode = Mode::UseGlobal; EXPECT_EQ(SelectionReason::ManualGlobal, SelectWinner(snapshot, processes).reason);
@@ -1023,4 +1024,302 @@ TEST(ProfilePresentation, ResidentEngineHasNoRetiredPageAndUsesUnicode)
     auto project=ReadBytes(root/L"HidHideClient/HidHideClient.vcxproj");EXPECT_EQ(std::string::npos,project.find("ProfilesPage"));EXPECT_EQ(std::string::npos,project.find("ProfilesView"));EXPECT_NE(std::string::npos,project.find("/utf-8"));
     auto resource=ReadBytes(root/L"HidHideClient/HidHideClient.rc");EXPECT_NE(std::string::npos,resource.find("#pragma code_page(65001)"));EXPECT_EQ(std::string::npos,resource.find("#pragma code_page(1252)"));
     auto manifest=ReadBytes(root/L"HidHideClient/Profiles.manifest");EXPECT_NE(std::string::npos,manifest.find("PerMonitorV2"));
+}
+
+namespace
+{
+    struct ActivationFixture
+    {
+        Snapshot snapshot;
+        ActivationHistory history;
+        std::wstring global{L"00000000-0000-0000-0000-000000000001"};
+        std::wstring a{L"00000000-0000-0000-0000-000000000002"};
+        std::wstring b{L"00000000-0000-0000-0000-000000000003"};
+        std::wstring c{L"00000000-0000-0000-0000-000000000004"};
+        ActivationFixture()
+        {
+            snapshot.settings = {1, global, Mode::Automatic, false, false, {}};
+            snapshot.profiles.emplace(global, Global(global));
+            snapshot.profiles.emplace(a, App(a,L"A",100,L"C:\\A.exe"));
+            snapshot.profiles.emplace(b, App(b,L"B",2,L"C:\\B.exe"));
+            snapshot.profiles.emplace(c, App(c,L"C",1,L"C:\\C.exe"));
+        }
+        ProcessObservation Process(std::wstring const& id, unsigned pid, std::uint64_t time)
+        { auto path = snapshot.profiles.at(id).executable; return {pid,time,path.filename().native(),path,true}; }
+        std::wstring Scan(std::vector<ProcessObservation> const& processes, bool complete=true)
+        { history.Update(snapshot,processes,complete); return history.Select(snapshot).profileId; }
+    };
+}
+TEST(ActivationHistory, NewestActivationFallsBackThroughAllStillRunningProfiles)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10), b=f.Process(f.b,2,20), c=f.Process(f.c,3,30);
+    EXPECT_EQ(f.a,f.Scan({a})); EXPECT_EQ(f.b,f.Scan({a,b})); EXPECT_EQ(f.c,f.Scan({a,b,c}));
+    EXPECT_EQ(f.b,f.Scan({a,b})); EXPECT_EQ(f.a,f.Scan({a})); EXPECT_EQ(f.global,f.Scan({}));
+}
+TEST(ActivationHistory, InstancesEditsAndRefreshDoNotPromoteButNewLifetimeDoes)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10), b=f.Process(f.b,2,20), extra=f.Process(f.a,3,30);
+    EXPECT_EQ(f.b,f.Scan({a,b})); EXPECT_EQ(f.b,f.Scan({a,b,extra}));
+    f.snapshot.profiles.at(f.a).priority=1000; f.snapshot.profiles.at(f.a).revision++;
+    EXPECT_EQ(f.b,f.Scan({a,b,extra})); EXPECT_EQ(f.b,f.Scan({b,extra}));
+    auto reused=f.Process(f.a,3,40); EXPECT_EQ(f.a,f.Scan({b,reused}));
+}
+TEST(ActivationHistory, RestartUsesCreationTimeThenPriorityThenStableId)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10),b=f.Process(f.b,2,20),c=f.Process(f.c,3,20);
+    EXPECT_EQ(f.b,f.Scan({c,a,b}));
+    f.history=ActivationHistory{}; f.snapshot.profiles.at(f.b).priority=1;
+    EXPECT_EQ(f.b,f.Scan({c,b,a}));
+    f.history=ActivationHistory{}; a.lifetimeIdentity=21;
+    EXPECT_EQ(f.a,f.Scan({b,c,a}));
+}
+TEST(ActivationHistory, UnsampledInstanceHandoffPreservesOrderAndPinUsingVerifiedExitTime)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10), b=f.Process(f.b,2,20), a2=f.Process(f.a,3,30);
+    f.Scan({a,b}); f.history.SetPin(f.a);
+    // A2 started before A1 exited, although no snapshot ever contained both live.
+    a.exitedAt=40;
+    EXPECT_EQ(f.a,f.Scan({a,b,a2})); EXPECT_EQ(f.a,f.history.Pin());
+    f.history.SetPin({}); EXPECT_EQ(f.b,f.Scan({b,a2}));
+    f.history.SetPin(f.a); a2.exitedAt=50; auto restarted=f.Process(f.a,3,60);
+    EXPECT_EQ(f.a,f.Scan({b,a2,restarted})); EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_EQ(f.a,f.history.Running().front());
+}
+TEST(ActivationHistory, ExitEvidenceSurvivesIncompleteDiscoveryWithoutInventingActivation)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10), b=f.Process(f.b,2,20), a2=f.Process(f.a,3,30);
+    f.Scan({a,b}); f.history.SetPin(f.a); a.exitedAt=40;
+    EXPECT_EQ(f.a,f.Scan({a,a2},false)); EXPECT_EQ(f.a,f.history.Pin());
+    EXPECT_EQ(f.a,f.Scan({a,b,a2})); EXPECT_EQ(f.a,f.history.Pin());
+    f.history.SetPin({}); EXPECT_EQ(f.b,f.Scan({b,a2}));
+    a2.exitedAt=50; EXPECT_EQ(f.b,f.Scan({b,a2}));
+    EXPECT_EQ(std::vector<std::wstring>{f.b},f.history.Running());
+}
+TEST(ActivationHistory, RetainedIntermediateLifetimeBridgesIncompleteScanHandoff)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10), b=f.Process(f.b,2,20), a2=f.Process(f.a,3,30), a3=f.Process(f.a,4,50);
+    f.Scan({a,b}); f.history.SetPin(f.a); a.exitedAt=40;
+    f.Scan({a,a2},false); a2.exitedAt=60;
+    EXPECT_EQ(f.a,f.Scan({a,a2,a3,b})); EXPECT_EQ(f.a,f.history.Pin());
+    f.history.SetPin({}); EXPECT_EQ(f.b,f.Scan({a3,b}));
+}
+TEST(ActivationHistory, FirstCompleteActivationIncludesExitedOverlappingPredecessor)
+{
+    ActivationFixture f; auto a1=f.Process(f.a,1,50), c=f.Process(f.c,3,80), a2=f.Process(f.a,2,90);
+    EXPECT_EQ(f.global,f.Scan({}));
+    EXPECT_EQ(f.global,f.Scan({a1},false));
+    a1.exitedAt=100;
+    EXPECT_EQ(f.c,f.Scan({a1,a2,c}));
+    EXPECT_EQ((std::vector<std::wstring>{f.c,f.a}),f.history.Running());
+    EXPECT_EQ(f.a,f.Scan({a2}));
+}
+TEST(ActivationHistory, NewEpisodeUsesOverlappingPredecessorsWithoutBridgingInactiveGap)
+{
+    ActivationFixture f;
+    auto old=f.Process(f.a,1,10), b=f.Process(f.b,2,40), a1=f.Process(f.a,3,50);
+    auto a2=f.Process(f.a,4,70), c=f.Process(f.c,5,80), a3=f.Process(f.a,6,90);
+    f.Scan({old}); f.history.SetPin(f.a); old.exitedAt=30;
+    EXPECT_EQ(f.a,f.Scan({old,b,a1},false));
+    a1.exitedAt=75;
+    EXPECT_EQ(f.a,f.Scan({old,b,a1,a2,c},false));
+    a2.exitedAt=100;
+    // This ordering requires another backward pass to connect A1 to live A3.
+    EXPECT_EQ(f.c,f.Scan({old,b,a1,a2,c,a3}));
+    EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_EQ((std::vector<std::wstring>{f.c,f.a,f.b}),f.history.Running());
+    EXPECT_EQ(f.a,f.Scan({b,a3}));
+    EXPECT_EQ(f.b,f.Scan({b}));
+}
+TEST(EditorSourceContract, TrayManualOverrideLabelPrecedesGenericApplicationLabel)
+{
+    auto root=std::filesystem::path(__FILE__).parent_path().parent_path();
+    auto source=ReadBytes(root/L"HidHideClient/src/HidHideClientDlg.cpp");
+    auto manual=source.find("SelectionReason::ManualApplication");
+    auto generic=source.find("selected->second.kind == HidHide::Profiles::Kind::Application");
+    ASSERT_NE(std::string::npos,manual); ASSERT_NE(std::string::npos,generic); EXPECT_LT(manual,generic);
+}
+TEST(ActivationHistory, PinTracksBackgroundHistoryAndExpiresOnLastInstanceExit)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10),b=f.Process(f.b,2,20),c=f.Process(f.c,3,30),a2=f.Process(f.a,4,40);
+    f.Scan({a,b}); f.history.SetPin(f.a);
+    EXPECT_EQ(f.a,f.Scan({a,b,c,a2})); EXPECT_EQ(SelectionReason::ManualApplication,f.history.Select(f.snapshot).reason);
+    EXPECT_EQ(f.a,f.Scan({b,c,a2})); f.history.SetPin({}); EXPECT_EQ(f.c,f.Scan({b,c,a2}));
+    f.history.SetPin(f.a); EXPECT_EQ(f.c,f.Scan({b,c})); EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_THROW(f.history.SetPin(f.a),std::invalid_argument);
+}
+TEST(ActivationHistory, IncompleteDiscoveryCannotExitOrPromoteAndCatalogInvalidatesPin)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10),b=f.Process(f.b,2,20);
+    f.Scan({a}); f.history.SetPin(f.a);
+    EXPECT_EQ(f.a,f.Scan({b},false)); EXPECT_EQ(f.a,f.Scan({},false));
+    EXPECT_EQ(f.a,f.Scan({a,b}));
+    f.snapshot.profiles.at(f.a).enabled=false;
+    EXPECT_EQ(f.b,f.Scan({},false)); EXPECT_TRUE(f.history.Pin().empty());
+    f.snapshot.profiles.erase(f.b); EXPECT_EQ(f.global,f.Scan({},false));
+}
+TEST(ActivationHistory, GlobalAndPauseTrackHistoryClearPinAndPathChangesInvalidate)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10),b=f.Process(f.b,2,20),c=f.Process(f.c,3,30);
+    f.Scan({a}); f.history.SetPin(f.a); f.snapshot.settings.mode=Mode::UseGlobal;
+    EXPECT_EQ(f.global,f.Scan({a,b})); EXPECT_TRUE(f.history.Pin().empty());
+    f.snapshot.settings.mode=Mode::Automatic; EXPECT_EQ(f.b,f.Scan({a,b}));
+    f.history.SetPin(f.a); f.snapshot.settings.paused=true; EXPECT_EQ(f.global,f.Scan({a,b,c}));
+    f.snapshot.settings.paused=false; EXPECT_EQ(f.c,f.Scan({a,b,c}));
+    f.history.SetPin(f.a); f.snapshot.profiles.at(f.a).executable=NormalizeExecutable(L"C:\\Different.exe");
+    EXPECT_EQ(f.c,f.Scan({a,b,c})); EXPECT_TRUE(f.history.Pin().empty());
+}
+TEST(ActivationHistory, ExactPathAndLifetimeAreRequiredAndReusedPidCannotRetainPin)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10); f.Scan({a}); f.history.SetPin(f.a);
+    auto recycled=f.Process(f.a,1,30); EXPECT_EQ(f.a,f.Scan({recycled})); EXPECT_TRUE(f.history.Pin().empty());
+    recycled.verifiedPath=L"D:\\A.exe"; EXPECT_EQ(f.global,f.Scan({recycled}));
+    recycled=f.Process(f.a,1,0); EXPECT_EQ(f.global,f.Scan({recycled}));
+}
+TEST(ActivationHistory, IncompleteReusedPidDefersPinExpiryUntilCompleteReconciliation)
+{
+    ActivationFixture f; auto a=f.Process(f.a,1,10); f.Scan({a}); f.history.SetPin(f.a);
+    auto reused=f.Process(f.a,1,20); reused.pathAccessible=false; reused.verifiedPath.clear();
+    f.Scan({reused},false); EXPECT_EQ(f.a,f.history.Pin());
+    reused=f.Process(f.a,1,20);
+    EXPECT_EQ(f.a,f.Scan({reused})); EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_EQ(SelectionReason::Application,f.history.Select(f.snapshot).reason);
+}
+
+// Spawned only with this exact filter by the real-handle cache stress test.
+// No coordinator, device, driver, registry, or repository is touched.
+TEST(ProcessLifetimeCache, ChildExitProbe) {}
+
+TEST(ProcessLifetimeCache, IncompleteDiscoveryClosesRealExitedProcessesEveryScan)
+{
+    ActivationFixture f; ProcessLifetimeCache cache;
+    std::vector<wchar_t> module(32768);
+    auto size = ::GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(size, 0u); ASSERT_LT(size, module.size());
+    std::filesystem::path executable(std::wstring(module.data(), size));
+    f.snapshot.profiles.at(f.a).executable = executable; cache.Retain(f.snapshot);
+    DWORD handlesBefore{}; ASSERT_TRUE(::GetProcessHandleCount(::GetCurrentProcess(), &handlesBefore));
+    for (unsigned i{}; i < 32; ++i)
+    {
+        auto command = L"\"" + executable.native() + L"\" --gtest_filter=ProcessLifetimeCache.ChildExitProbe";
+        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION child{};
+        ASSERT_TRUE(::CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
+            CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child));
+        FILETIME created{}, exited{}, kernel{}, user{};
+        auto known = ::GetProcessTimes(child.hProcess, &created, &exited, &kernel, &user);
+        ULARGE_INTEGER time{}; time.LowPart = created.dwLowDateTime; time.HighPart = created.dwHighDateTime;
+        auto process = child.hProcess;
+        cache.Remember(process, {child.dwProcessId, time.QuadPart, executable.filename().native(), executable, true});
+        auto resumed = ::ResumeThread(child.hThread); ::CloseHandle(child.hThread);
+        auto wait = ::WaitForSingleObject(process, 10000);
+        if (wait != WAIT_OBJECT_0) { ::TerminateProcess(process, ERROR_CANCELLED); ::WaitForSingleObject(process, 5000); }
+        ASSERT_TRUE(known); ASSERT_EQ(1u, resumed); ASSERT_EQ(WAIT_OBJECT_0, wait);
+        // A persistently inaccessible candidate keeps discovery incomplete.
+        std::vector<ProcessObservation> sample{{99999, 0, executable.filename().native(), {}, false}};
+        ASSERT_TRUE(cache.Collect(sample));
+        f.history.Update(f.snapshot, sample, false);
+        EXPECT_EQ(0u, cache.HandleCount()); EXPECT_LE(sample.size(), 2u);
+        EXPECT_EQ(f.global, f.history.Select(f.snapshot).profileId);
+    }
+    DWORD handlesAfter{}; ASSERT_TRUE(::GetProcessHandleCount(::GetCurrentProcess(), &handlesAfter));
+    EXPECT_LE(handlesAfter, handlesBefore + 2);
+    EXPECT_GT(cache.IntervalCount(), 0u);
+    // Incomplete scans do not enumerate the retained exit intervals again.
+    std::vector<ProcessObservation> sample; EXPECT_TRUE(cache.Collect(sample)); EXPECT_TRUE(sample.empty());
+    cache.AppendExited(sample); EXPECT_FALSE(sample.empty()); cache.ConsumeExited(); EXPECT_EQ(0u, cache.IntervalCount());
+}
+
+TEST(ProcessLifetimeCache, IrrelevantDisabledDeletedAndChangedPathsReleaseHandlesImmediately)
+{
+    ActivationFixture f; ProcessLifetimeCache cache; cache.Retain(f.snapshot);
+    auto remember = [&](ProcessObservation const& observation)
+    {
+        HANDLE retained{};
+        EXPECT_TRUE(::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentProcess(), ::GetCurrentProcess(),
+            &retained, 0, FALSE, DUPLICATE_SAME_ACCESS));
+        cache.Remember(retained, observation);
+    };
+    DWORD before{}; ASSERT_TRUE(::GetProcessHandleCount(::GetCurrentProcess(), &before));
+    auto irrelevant = f.Process(f.a, 1, 10); irrelevant.verifiedPath = L"D:\\unrelated\\A.exe";
+    for (unsigned i{}; i < 4096; ++i) { irrelevant.processId = i + 1; remember(irrelevant); }
+    EXPECT_EQ(0u, cache.HandleCount());
+    auto a = f.Process(f.a, 1, 10), b = f.Process(f.b, 2, 20), c = f.Process(f.c, 3, 30);
+    remember(a); remember(b); remember(c); EXPECT_EQ(3u, cache.HandleCount());
+    a.exitedAt = 40; cache.RememberExit(a);
+    f.snapshot.profiles.at(f.a).enabled = false; f.snapshot.profiles.erase(f.b);
+    f.snapshot.profiles.at(f.c).executable = L"D:\\different\\C.exe";
+    cache.Retain(f.snapshot); EXPECT_EQ(0u, cache.HandleCount()); EXPECT_EQ(0u, cache.IntervalCount());
+    DWORD after{}; ASSERT_TRUE(::GetProcessHandleCount(::GetCurrentProcess(), &after)); EXPECT_LE(after, before + 2);
+}
+
+TEST(ProcessLifetimeCache, OverlappingExitsCompactAndDisjointEpisodesRemainDistinct)
+{
+    ActivationFixture f; ProcessLifetimeCache cache; cache.Retain(f.snapshot);
+    for (unsigned i{}; i < 10000; ++i)
+    {
+        auto process = f.Process(f.a, i + 1, i + 10); process.exitedAt = i + 20;
+        cache.RememberExit(process); EXPECT_EQ(1u, cache.IntervalCount());
+    }
+    auto separate = f.Process(f.a, 20000, 20000); separate.exitedAt = 20010; cache.RememberExit(separate);
+    EXPECT_EQ(2u, cache.IntervalCount());
+    std::vector<ProcessObservation> evidence; cache.AppendExited(evidence);
+    ASSERT_EQ(2u, evidence.size()); EXPECT_EQ(0u, evidence.front().processId);
+    EXPECT_EQ(10u, evidence.front().lifetimeIdentity); EXPECT_EQ(10019u, evidence.front().exitedAt);
+}
+
+TEST(ProcessLifetimeCache, CompactedEvidencePreservesHandoffsAndDoesNotBridgeAnInactiveGap)
+{
+    ActivationFixture f; ProcessLifetimeCache cache; cache.Retain(f.snapshot);
+    auto old = f.Process(f.a, 1, 10), b = f.Process(f.b, 2, 20);
+    f.Scan({old, b}); f.history.SetPin(f.a);
+    auto middle = f.Process(f.a, 3, 30); old.exitedAt = 40; middle.exitedAt = 60;
+    cache.RememberExit(old); cache.RememberExit(middle);
+    std::vector<ProcessObservation> sample{b, f.Process(f.a, 4, 50)}; cache.AppendExited(sample);
+    EXPECT_EQ(f.a, f.Scan(sample)); EXPECT_EQ(f.a, f.history.Pin());
+    f.history.SetPin({}); EXPECT_EQ(f.b, f.Scan(sample)); cache.ConsumeExited();
+    auto ended = f.Process(f.a, 4, 50); ended.exitedAt = 70; cache.RememberExit(ended);
+    auto next = f.Process(f.a, 5, 80); next.exitedAt = 100; cache.RememberExit(next);
+    f.history.SetPin(f.a);
+    sample = {b, f.Process(f.c, 6, 90), f.Process(f.a, 7, 95)}; cache.AppendExited(sample);
+    EXPECT_EQ(f.c, f.Scan(sample)); EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_EQ((std::vector<std::wstring>{f.c, f.a, f.b}), f.history.Running());
+}
+
+TEST(ProcessLifetimeCache, RecycledPidDuringIncompleteHandoffPreservesPinUntilReconciliation)
+{
+    ActivationFixture f; ProcessLifetimeCache cache; cache.Retain(f.snapshot);
+    auto old=f.Process(f.a,1,10), b=f.Process(f.b,3,15), successor=f.Process(f.a,2,20);
+    auto recycled=f.Process(f.c,1,40);
+    f.Scan({old,b}); f.history.SetPin(f.a);
+    // Collect reports the exact exit once and retains its compact interval.
+    old.exitedAt=30; cache.RememberExit(old);
+    std::vector<ProcessObservation> sample{old,b,successor};
+    ASSERT_TRUE(cache.Collect(sample)); f.Scan(sample,false);
+    EXPECT_EQ(f.a,f.history.Pin()); EXPECT_EQ(1u,cache.IntervalCount());
+    // Later incomplete scans no longer include the retired PID's exit.
+    sample={b,successor,recycled}; ASSERT_TRUE(cache.Collect(sample));
+    ASSERT_EQ(3u,sample.size()); EXPECT_EQ(f.a,f.Scan(sample,false)); EXPECT_EQ(f.a,f.history.Pin());
+    cache.AppendExited(sample);
+    EXPECT_EQ(f.a,f.Scan(sample)); EXPECT_EQ(f.a,f.history.Pin());
+    EXPECT_EQ(SelectionReason::ManualApplication,f.history.Select(f.snapshot).reason);
+    EXPECT_EQ((std::vector<std::wstring>{f.c,f.b,f.a}),f.history.Running());
+    cache.ConsumeExited(); EXPECT_EQ(0u,cache.IntervalCount());
+    f.history.SetPin({}); EXPECT_EQ(f.b,f.Scan({b,successor}));
+}
+
+TEST(ProcessLifetimeCache, RecycledPidDuringIncompleteInactiveGapExpiresPinAfterReconciliation)
+{
+    ActivationFixture f; ProcessLifetimeCache cache; cache.Retain(f.snapshot);
+    auto old=f.Process(f.a,1,10), b=f.Process(f.b,3,15), successor=f.Process(f.a,2,35);
+    auto recycled=f.Process(f.c,1,40);
+    f.Scan({old,b}); f.history.SetPin(f.a);
+    old.exitedAt=30; cache.RememberExit(old);
+    std::vector<ProcessObservation> sample{old,b,successor};
+    ASSERT_TRUE(cache.Collect(sample)); f.Scan(sample,false); EXPECT_EQ(f.a,f.history.Pin());
+    sample={b,successor,recycled}; ASSERT_TRUE(cache.Collect(sample));
+    ASSERT_EQ(3u,sample.size()); EXPECT_EQ(f.a,f.Scan(sample,false)); EXPECT_EQ(f.a,f.history.Pin());
+    cache.AppendExited(sample);
+    EXPECT_EQ(f.c,f.Scan(sample)); EXPECT_TRUE(f.history.Pin().empty());
+    EXPECT_EQ(SelectionReason::Application,f.history.Select(f.snapshot).reason);
+    EXPECT_EQ((std::vector<std::wstring>{f.c,f.a,f.b}),f.history.Running());
+    cache.ConsumeExited(); EXPECT_EQ(f.a,f.Scan({b,successor}));
 }

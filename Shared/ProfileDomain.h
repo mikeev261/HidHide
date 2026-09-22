@@ -149,6 +149,9 @@ namespace HidHide::Profiles
         std::wstring fileName;
         std::filesystem::path verifiedPath;
         bool pathAccessible{ true };
+        // Verified exit FILETIME from a retained handle for this exact lifetime.
+        // Exited observations provide continuity evidence, never a live match.
+        std::uint64_t exitedAt{};
     };
 
     // Process path caches must include a creation/lifetime identity. A recycled PID
@@ -180,7 +183,7 @@ namespace HidHide::Profiles
         std::map<std::uint32_t, std::pair<std::uint64_t, std::filesystem::path>> m_Entries;
     };
 
-    enum class SelectionReason { Application, GlobalFallback, ManualGlobal, Paused, DetectionUncertain };
+    enum class SelectionReason { Application, ManualApplication, GlobalFallback, ManualGlobal, Paused, DetectionUncertain };
     struct Selection
     {
         std::wstring profileId;
@@ -195,6 +198,129 @@ namespace HidHide::Profiles
         bool operator!=(Selection const& other) const { return !(*this == other); }
     };
 
+    // Runtime only. Each complete observation advances history even when no UI
+    // consumer has drained the worker's latest result yet.
+    class ActivationHistory
+    {
+        struct Entry
+        {
+            std::filesystem::path path;
+            std::set<std::pair<std::uint32_t, std::uint64_t>> instances;
+            std::uint64_t order{}, created{};
+        };
+        std::map<std::wstring, Entry> m_Entries;
+        std::uint64_t m_Order{};
+        std::wstring m_Pin;
+    public:
+        void Update(Snapshot const& snapshot, std::vector<ProcessObservation> const& processes, bool complete)
+        {
+            // Catalog invalidations do not depend on process discovery.
+            for (auto it = m_Entries.begin(); it != m_Entries.end();)
+            {
+                auto p = snapshot.profiles.find(it->first);
+                if (p == snapshot.profiles.end() || !p->second.enabled || p->second.kind != Kind::Application
+                    || NormalizeExecutable(p->second.executable) != it->second.path) it = m_Entries.erase(it);
+                else ++it;
+            }
+            if (!m_Entries.count(m_Pin)) m_Pin.clear();
+            if (snapshot.settings.paused || snapshot.settings.mode == Mode::UseGlobal) m_Pin.clear();
+            if (!complete)
+            {
+                // A recycled PID proves that instance ended, not that the
+                // profile stopped: an overlapping successor may still run.
+                // Defer pin expiry until a complete scan can reconcile all
+                // live instances with the retained exit intervals below.
+                return;
+            }
+            std::map<std::wstring, Entry> next;
+            std::vector<std::wstring> activated;
+            for (auto const& [id, profile] : snapshot.profiles)
+            {
+                if (!profile.enabled || profile.kind != Kind::Application) continue;
+                Entry entry; entry.path = NormalizeExecutable(profile.executable);
+                for (auto const& process : processes)
+                {
+                    if (!process.processId || !process.lifetimeIdentity || !process.pathAccessible || process.verifiedPath.empty() || process.exitedAt) continue;
+                    if (NormalizeExecutable(process.verifiedPath) != entry.path) continue;
+                    entry.instances.emplace(process.processId, process.lifetimeIdentity);
+                    if (!entry.created || process.lifetimeIdentity < entry.created) entry.created = process.lifetimeIdentity;
+                }
+                if (entry.instances.empty()) continue;
+                // Date this live episode from all retained verified intervals,
+                // including predecessors first observed in an incomplete scan.
+                // Walk backward only through overlaps: a real inactive gap starts
+                // a new activation even if an older entry still exists.
+                bool earlier{};
+                do
+                {
+                    earlier = false;
+                    for (auto const& process : processes)
+                        if (process.lifetimeIdentity && process.lifetimeIdentity < entry.created
+                            && process.exitedAt >= entry.created && process.pathAccessible && !process.verifiedPath.empty()
+                            && NormalizeExecutable(process.verifiedPath) == entry.path)
+                        { entry.created = process.lifetimeIdentity; earlier = true; }
+                } while (earlier);
+                auto old = m_Entries.find(id);
+                // Retained exit evidence may also contain an intermediate
+                // instance seen during an incomplete scan. Follow overlapping
+                // verified intervals, without bridging a real inactive gap.
+                std::uint64_t continuousUntil{};
+                if (old != m_Entries.end()) for (auto const& process : processes)
+                    if (process.exitedAt && process.pathAccessible && NormalizeExecutable(process.verifiedPath) == entry.path
+                        && (process.processId ? old->second.instances.count({process.processId, process.lifetimeIdentity}) != 0
+                            : std::any_of(old->second.instances.begin(), old->second.instances.end(), [&](auto const& instance)
+                                { return instance.second >= process.lifetimeIdentity && instance.second <= process.exitedAt; })))
+                        continuousUntil = (std::max)(continuousUntil, process.exitedAt);
+                bool extended{};
+                do
+                {
+                    extended = false;
+                    for (auto const& process : processes)
+                        if (process.lifetimeIdentity && process.lifetimeIdentity <= continuousUntil && process.exitedAt > continuousUntil
+                            && process.pathAccessible && NormalizeExecutable(process.verifiedPath) == entry.path)
+                        { continuousUntil = process.exitedAt; extended = true; }
+                } while (extended);
+                if (old != m_Entries.end() && (std::any_of(entry.instances.begin(), entry.instances.end(),
+                    [&](auto const& instance) { return old->second.instances.count(instance) != 0; })
+                    || continuousUntil >= entry.created)) entry.order = old->second.order;
+                else { activated.push_back(id); if (m_Pin == id) m_Pin.clear(); }
+                next.emplace(id, std::move(entry));
+            }
+            std::sort(activated.begin(), activated.end(), [&](auto const& a, auto const& b)
+            {
+                if (next.at(a).created != next.at(b).created) return next.at(a).created < next.at(b).created;
+                if (snapshot.profiles.at(a).priority != snapshot.profiles.at(b).priority)
+                    return snapshot.profiles.at(a).priority < snapshot.profiles.at(b).priority;
+                return a > b;
+            });
+            for (auto const& id : activated) next.at(id).order = ++m_Order;
+            m_Entries = std::move(next);
+            if (!m_Entries.count(m_Pin)) m_Pin.clear();
+        }
+        std::vector<std::wstring> Running() const
+        {
+            std::vector<std::wstring> result;
+            for (auto const& [id, entry] : m_Entries) { (void)entry; result.push_back(id); }
+            std::sort(result.begin(), result.end(), [&](auto const& a, auto const& b) { return m_Entries.at(a).order > m_Entries.at(b).order; });
+            return result;
+        }
+        std::wstring const& Pin() const { return m_Pin; }
+        void SetPin(std::wstring const& id)
+        {
+            if (!id.empty() && !m_Entries.count(id)) throw std::invalid_argument("The saved application is no longer running");
+            m_Pin = id;
+        }
+        Selection Select(Snapshot const& snapshot) const
+        {
+            if (snapshot.settings.paused) return { snapshot.settings.selectedGlobalId, SelectionReason::Paused, {}, true };
+            if (snapshot.settings.mode == Mode::UseGlobal) return { snapshot.settings.selectedGlobalId, SelectionReason::ManualGlobal, {}, true };
+            auto running = Running(); auto id = m_Pin.empty() ? (running.empty() ? std::wstring{} : running.front()) : m_Pin;
+            if (id.empty()) return { snapshot.settings.selectedGlobalId, SelectionReason::GlobalFallback, {}, true };
+            return { id, m_Pin.empty() ? SelectionReason::Application : SelectionReason::ManualApplication,
+                snapshot.profiles.at(id).executable.filename().native(), true };
+        }
+    };
+
     inline Selection SelectWinner(Snapshot const& snapshot, std::vector<ProcessObservation> const& processes)
     {
         Validate(snapshot);
@@ -202,28 +328,12 @@ namespace HidHide::Profiles
         if (snapshot.settings.mode == Mode::UseGlobal)
             return { snapshot.settings.selectedGlobalId, SelectionReason::ManualGlobal, {}, true };
 
-        Profile const* winner{};
-        bool uncertain{};
-        for (auto const& [id, profile] : snapshot.profiles)
-        {
-            (void)id;
-            if (profile.kind != Kind::Application || !profile.enabled) continue;
-            auto normalized = NormalizeExecutable(profile.executable);
-            auto wantedName = normalized.filename().native();
-            for (auto const& process : processes)
-            {
-                if (_wcsicmp(process.fileName.c_str(), wantedName.c_str()) != 0) continue;
-                if (!process.pathAccessible || process.verifiedPath.empty()) { uncertain = true; continue; }
-                if (_wcsicmp(NormalizeExecutable(process.verifiedPath).c_str(), normalized.c_str()) != 0) continue;
-                if (!winner || profile.priority > winner->priority
-                    || (profile.priority == winner->priority && profile.id < winner->id)) winner = &profile;
-            }
-        }
-        if (winner) return { winner->id, SelectionReason::Application, winner->executable.filename().native(), true };
-        // An inaccessible same-name process is diagnostic uncertainty, never a
-        // winner. The selected Global remains the complete effective policy.
-        if (uncertain) return { snapshot.settings.selectedGlobalId, SelectionReason::DetectionUncertain, {}, true };
-        return { snapshot.settings.selectedGlobalId, SelectionReason::GlobalFallback, {}, true };
+        ActivationHistory history; history.Update(snapshot, processes, true);
+        auto selection = history.Select(snapshot);
+        if (selection.reason == SelectionReason::GlobalFallback && std::any_of(processes.begin(), processes.end(),
+            [](auto const& p) { return !p.pathAccessible || p.verifiedPath.empty() || !p.lifetimeIdentity; }))
+            selection.reason = SelectionReason::DetectionUncertain;
+        return selection;
     }
 
     inline std::set<std::wstring> HiddenDevices(Profile const& profile)

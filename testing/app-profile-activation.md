@@ -8,8 +8,8 @@ the installed Microsoft-signed driver or whether retained handles continue to re
 The supported contract has two ordered paths. A verified **Use Global** profile
 can hide physical devices before an external game launch. **Launch with profile**
 creates the saved application's exact executable suspended, applies and reads back
-its complete policy, then resumes it and holds that profile while that process and
-the coordinator are alive. Automatic discovery after an external launch remains best effort. Applying
+its complete policy, then resumes it and returns to Automatic with no manual pin.
+The launched process participates in normal newest-activation selection. Automatic discovery after an external launch remains best effort. Applying
 an inactive application profile only saves it. The direct action cannot guarantee
 startup ordering for a launcher that hands off to another process, child processes
 after the tracked parent exits, an already-running copy, or a game requiring extra
@@ -39,7 +39,10 @@ Do not run this procedure against the development host's existing user profile.
 3. Close every copy of the test application. Confirm the Global fallback is
    visible and the application profile is saved but inactive. Use **Launch with
    profile**. Record the first open, the applied/verified state before launch,
-   feeder access, and the held profile while the tracked process runs. Confirm
+   feeder access, and the active mask while the tracked process runs. Start a second
+   saved application and verify it takes over; close it and verify fallback to the
+   still-running launched application. Pin an older running mask, start another
+   application, then Return to Automatic and verify the newest surviving activation. Confirm
    an already-running copy is rejected. Close the launched process and verify a
    fresh automatic scan returns to the selected fallback.
 4. For retained-handle behavior, deliberately obtain and keep a successful
@@ -55,3 +58,21 @@ Do not run this procedure against the development host's existing user profile.
 The signed-driver and retained-handle gate remains open until this procedure is
 run with an authorized physical device and the evidence is reviewed. Compilation,
 mock enforcement, and a real suspended child with no physical driver do not close it.
+
+Process-discovery regressions also run without the installed driver. The native
+`ProcessLifetimeCache` tests repeatedly start the native test executable with only
+its inert `ChildExitProbe` test selected, exercise real retained handles through
+exit, and keep an inaccessible candidate in every synthetic scan. Other cache tests
+reject thousands of wrong-path candidates and preserve overlapping handoff versus
+separate activation episodes. `Editor/tests/recent-mask.mjs` verifies saved Pause
+and Use Global, saved edits, Retry, and worker reconciliation during incomplete
+discovery, then checks that returning to Automatic does not fabricate transitions.
+
+Only live exact-match process objects are normally retained. Exited lifetimes
+become a per-path union of time intervals and their handles close immediately,
+independent of scan completeness. Incomplete scans never rescan that exit history;
+overlapping intervals merge on insertion. A complete scan consumes the evidence,
+and disabled, deleted, missing or changed paths discard it. Under indefinitely
+incomplete discovery, distinct observed inactive gaps can still require one compact
+interval each until discovery recovers. There is no arbitrary truncation that could
+silently turn an observed handoff into a fresh activation.

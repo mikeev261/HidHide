@@ -1,5 +1,36 @@
 # Unified package progress
 
+## Most recent application mask — 2026-09-22
+
+Candidate 2.1.17 selects the newest activated still-running saved application
+profile, falling back through earlier surviving activations to the selected Global.
+Runtime manual overrides are authenticated and version-checked; process lifetime,
+exact paths, saved eligibility, and complete scans control selection. Edits and
+additional instances do not promote applications. Use Global and Pause keep the
+activation history current while clearing the pin. Restart reconstructs history.
+Verified process handles retain exit times across scans, preserving activation
+order and manual pins when another instance starts before its predecessor exits.
+Exit evidence is retained through incomplete scans and consumed only with a
+complete result. Launch prerequisites and the identity of the successfully created
+suspended process are checked before saving Automatic mode, including pending
+review of an accepted external baseline. Failed creation preserves settings and
+the current mask; later failures restore the prior mode after confirmed abort.
+An uncertain child retains the existing conservative policy hold.
+The editor distinguishes running profiles, requested masks, verified active masks,
+and manual overrides without replacing unsaved drafts.
+
+Successful direct launches retain suspended creation, policy application and fresh
+readback before resume, then participate in normal activation order. Launch returns
+to durable Automatic mode and clears the pin. Multiple launched processes are
+supported; uncertain failures retain conservative protection. Owned live processes
+still block setup maintenance. Kernel, signed payload, IOCTL, baseline, ownership,
+and installer action boundaries are unchanged.
+
+Validation is isolated native/editor fixtures with simulated enforcement, pending
+final build evidence. Installed-driver, physical-input, and owner UI acceptance are
+separate and are not claimed by this checkpoint.
+
+
 ## Application selection during profile creation — 2026-09-20
 
 New application profiles choose an EXE before naming, through Browse or a searchable

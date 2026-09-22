@@ -3,6 +3,7 @@
 
 #include "FilterDriverProxy.h"
 #include "ProfileRepository.h"
+#include "ProfileProcessLifetime.h"
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -47,8 +48,16 @@ public:
 
     ApplyOutcome PublishSaved(HidHide::Profiles::LoadResult loaded, HidHide::Profiles::SavedVersion version, std::wstring action, bool cleanupPending = false);
     ApplyOutcome RetryActivation();
-    std::wstring LaunchSavedProfile(std::wstring const& id);
-    bool HasLaunchedProcess() const { return m_LaunchedProcess && ::WaitForSingleObject(m_LaunchedProcess, 0) != WAIT_OBJECT_0; }
+    // Called synchronously while the service retains its repository writer lease.
+    // true commits Automatic; false restores the prior mode after confirmed abort.
+    std::wstring LaunchSavedProfile(std::wstring const& id, std::function<void(bool)> const& changeMode);
+    void ValidateLaunch(std::wstring const& id, DWORD ownPid = 0);
+    bool HasLaunchedProcess() const;
+    bool LaunchUncertain() const { return m_LaunchUncertain; }
+    std::vector<std::wstring> RunningOrder() const;
+    std::wstring ManualMaskId() const;
+    HidHide::Profiles::Selection RequestedSelection() const;
+    ApplyOutcome SelectMask(std::wstring const& id);
     std::wstring const& LaunchedProfileId() const { return m_LaunchedProfileId; }
     void Tick();
     bool AcceptanceScanNow();
@@ -64,6 +73,7 @@ public:
 private:
     struct ScanResult { std::uint64_t revision{}; bool complete{ true }; std::vector<HidHide::Profiles::ProcessObservation> processes; std::set<std::wstring> runningProfiles, missingProfiles; HidHide::Profiles::Selection selection; };
     ScanResult Scan(HidHide::Profiles::Snapshot const& snapshot);
+    bool CanReconcileScan(bool complete) const;
     void WorkerMain() noexcept;
     void RepositoryWatcherMain() noexcept;
     void SubmitSnapshot();
@@ -104,7 +114,11 @@ private:
     std::uint64_t m_LastPublishedRevision{};
     std::set<std::wstring> m_LastPublishedRunning, m_LastPublishedMissing;
     HidHide::Profiles::ProcessIdentityCache m_ProcessCache;
-    std::mutex m_ScanMutex;
+    mutable std::mutex m_ScanMutex;
+    HidHide::Profiles::ActivationHistory m_Activations;
+    bool m_LastScanComplete{};
+    std::vector<HANDLE> m_OwnedProcesses;
+    HidHide::Profiles::ProcessLifetimeCache m_ObservedProcesses;
     bool m_StopRequested{};
     bool m_WorkerFailed{};
     std::thread m_Worker;

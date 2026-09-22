@@ -270,6 +270,7 @@ void CHidHideClientDlg::UpdateTrayTooltip()
         profileLabel = selected->second.name;
         if (!m_ProfilesCoordinator->EffectiveSelectionVerified()) profileLabel += L" (saved selection; current unconfirmed)";
         else if (selection.reason == HidHide::Profiles::SelectionReason::Paused) profileLabel += L" (paused; hiding off)";
+        else if (selection.reason == HidHide::Profiles::SelectionReason::ManualApplication) profileLabel += L" (manual mask override)";
         else if (selected->second.kind == HidHide::Profiles::Kind::Application) profileLabel += L" (running application)";
         else if (selection.reason == HidHide::Profiles::SelectionReason::ManualGlobal) profileLabel += L" (manual Use Global)";
         else profileLabel += L" (Automatic fallback)";

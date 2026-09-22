@@ -28,6 +28,10 @@ function request(value){return new Promise((resolve,reject)=>{
 });}
 async function ok(value){const reply=await request(value);assert.equal(reply.ok,true,reply.error);return reply;}
 async function blocked(value,pattern){const reply=await request(value);assert.equal(reply.ok,false,'Operation should have been blocked');assert.match(reply.error,pattern);}
+function launchResources(){
+ return JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+  `@{handles=(Get-Process -Id ${engine.pid}).HandleCount;children=@(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${engine.pid}' | Select-Object -ExpandProperty Name)} | ConvertTo-Json -Compress`],{encoding:'utf8',windowsHide:true}));
+}
 let checks=[];
 let app;
 try{
@@ -53,14 +57,45 @@ try{
  await ok({command:'settings',settings:{...snapshot.settings,allowedApplications:[]},expectedSettings:snapshot.settingsVersion});
  checks.push('A global Allowed-app exemption blocks a supposedly hidden launch');
 
+ // A readable .exe with invalid executable contents passes metadata validation.
+ // CreateProcess itself must succeed before Launch is allowed to change policy.
+ await fs.writeFile(path.join(root,'Bad.exe'),'This is not a Windows executable.');
+ const bad=(await ok({command:'new',kind:'application',name:'Bad executable',executable:path.join(root,'Bad.exe')})).profile;
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ await ok({command:'apply',profile:bad,expected:null,settings:{...snapshot.settings,mode:'useGlobal'},expectedSettings:snapshot.settingsVersion});
+ await ok({command:'fixture-process',running:true});
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ assert.equal(snapshot.activeId,initial.settings.selectedGlobalId);assert(snapshot.runningOrder.includes(game.id));
+ const beforeBad=await fs.readFile(path.join(root,'Profiles/settings.json'));
+ const beforeWrites=(await ok({command:'fixture-state'})).enforcementWrites;
+ const resourcesBefore=launchResources();
+ for(let attempt=0;attempt<8;attempt++)
+  await blocked({command:'launch',id:bad.id,expected:snapshot.profiles.find(p=>p.id===bad.id).version,expectedSettings:snapshot.settingsVersion},/Create suspended application/i);
+ const afterBad=(await ok({command:'snapshot'})).snapshot;
+ assert.deepEqual(afterBad.settingsVersion,snapshot.settingsVersion);
+ assert.deepEqual(await fs.readFile(path.join(root,'Profiles/settings.json')),beforeBad);
+ assert.equal(afterBad.activeId,snapshot.activeId);assert.equal(afterBad.verified,true);assert.equal(afterBad.settings.mode,'useGlobal');
+ assert.equal((await ok({command:'fixture-state'})).enforcementWrites,beforeWrites);
+ const resourcesAfter=launchResources();
+ assert.deepEqual(resourcesAfter.children,resourcesBefore.children,'Failed creation leaked a child');
+ assert(resourcesAfter.handles<=resourcesBefore.handles+2,'Repeated failed creation leaked handles');
+ checks.push('Repeated invalid-EXE creation preserves Use Global settings bytes/hash and verified mask despite another running profile, without leaked children or handles');
+ await ok({command:'fixture-process',running:false});
+
  snapshot=(await ok({command:'snapshot'})).snapshot;
  await ok({command:'fixture-launch-readback',fail:true});
  await ok({command:'fixture-launch-witness'});
  await blocked(command(snapshot),/applied and verified|readback/i);
  assert.equal(await exists(path.join(root,'launch-probe-started.json')),false);
  await ok({command:'fixture-launch-readback',fail:false});
- checks.push('Unknown driver readback aborts the suspended child before its first instruction');
+ await ok({command:'retry'});
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ assert.equal(snapshot.settings.mode,'useGlobal');assert.equal(snapshot.activeId,initial.settings.selectedGlobalId);assert.equal(snapshot.verified,true);
+ assert.deepEqual(launchResources().children,resourcesBefore.children,'Readback failure leaked a suspended child');
+ checks.push('Unknown driver readback aborts the suspended child before its first instruction and restores the previous saved Use Global mode');
 
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ await ok({command:'settings',settings:{...snapshot.settings,mode:'useGlobal'},expectedSettings:snapshot.settingsVersion});
  snapshot=(await ok({command:'snapshot'})).snapshot;
  await ok({command:'fixture-launch-witness'});
  const launching=request(command(snapshot));
@@ -74,11 +109,25 @@ try{
 
  await delay(700);
  snapshot=(await ok({command:'snapshot'})).snapshot;
- assert.equal(snapshot.launchedId,game.id);assert.equal(snapshot.activeId,game.id);assert.equal(snapshot.verified,true);
- await blocked({command:'settings',settings:snapshot.settings,expectedSettings:snapshot.settingsVersion},/Close the directly launched application/i);
+ assert.equal(snapshot.settings.mode,'automatic');assert.equal(snapshot.launchedId,'');assert.equal(snapshot.activeId,game.id);assert.equal(snapshot.verified,true);
+ await ok({command:'settings',settings:{...snapshot.settings,startWithWindows:false},expectedSettings:snapshot.settingsVersion});
  await ok({command:'fixture-process',running:false});
  snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.activeId,game.id);
- checks.push('Owned process handle keeps the profile active despite a Global fallback scan and blocks settings changes');
+ checks.push('Owned process identity participates in normal selection and saved settings remain editable');
+ const newer=(await ok({command:'new',kind:'application',name:'Newer application',executable:path.join(root,'Newer.exe')})).profile;
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ await ok({command:'apply',profile:newer,expected:null,settings:snapshot.settings,expectedSettings:snapshot.settingsVersion});
+ await ok({command:'fixture-processes',processes:[{id:newer.id,pid:60002,created:2}],incomplete:false});
+ snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.activeId,newer.id);
+ await ok({command:'fixture-processes',processes:[],incomplete:false});
+ snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.activeId,game.id);
+ checks.push('A newer activation replaces the launched application mask and its exit restores the still-running launched application');
+ await fs.copyFile(path.join(probe,'LaunchProbe.exe'),path.join(root,'Newer.exe'));
+ snapshot=(await ok({command:'snapshot'})).snapshot;
+ await ok({command:'launch',id:newer.id,expected:snapshot.profiles.find(p=>p.id===newer.id).version,expectedSettings:snapshot.settingsVersion});
+ snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.activeId,newer.id);assert.equal(snapshot.launchedId,'');
+ assert(snapshot.runningOrder.includes(game.id));
+ checks.push('A second direct launch is an ordinary newer activation while the first launched application remains running');
 
  await fs.writeFile(path.join(root,'launch-probe-stop.flag'),'stop');
  await until(async()=>{const next=(await ok({command:'snapshot'})).snapshot;return !next.launchedId && next.activeId===initial.settings.selectedGlobalId;},'Global fallback did not resume after child exit');
@@ -95,10 +144,10 @@ try{
  await page.getByRole('button',{name:'Launch with profile'}).click();
  await until(()=>exists(path.join(root,'launch-probe-started.json')),'Editor launch did not reach the native child');
  assert.equal(JSON.parse(await fs.readFile(path.join(root,'launch-probe-started.json'),'utf8')).verifiedAtManagedEntry,true);
- snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.launchedId,game.id);
+ snapshot=(await ok({command:'snapshot'})).snapshot;assert.equal(snapshot.launchedId,'');assert.equal(snapshot.activeId,game.id);
  checks.push('The actual Electron button passed the command allowlist and authenticated native bridge to launch the verified child');
  await fs.writeFile(path.join(root,'launch-probe-stop.flag'),'stop');
- await until(async()=>!(await ok({command:'snapshot'})).snapshot.launchedId,'Editor-launched child did not exit');
+ await until(async()=>(await ok({command:'snapshot'})).snapshot.activeId===initial.settings.selectedGlobalId,'Editor-launched child did not exit');
  await app.close();app=null;
  await ok({command:'fixture-stop'});
  await until(()=>exists(path.join(root,'editor-host-stopped.json')),'Native fixture did not stop');

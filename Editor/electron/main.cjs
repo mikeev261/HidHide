@@ -22,7 +22,7 @@ const native=app.isPackaged?path.resolve(path.dirname(process.execPath),'..','Hi
 const discovery=require('./application-discovery.cjs').createApplicationDiscovery(native);
 const fixtureDiscoveryNative=fixture&&process.argv.includes('--fixture-discovery-native');
 const discover=(command,selection)=>fixture&&!fixtureDiscoveryNative?require('./fixture.cjs').discover(command,selection):discovery.run(command,selection);
-const commands=new Set(['snapshot','apply','settings','delete','retry','launch','backup','restore','import','export','new','adopt','abandon-adoption']);
+const commands=new Set(['snapshot','apply','settings','delete','retry','mask','automatic','launch','backup','restore','import','export','new','adopt','abandon-adoption']);
 function finishOperation(){inFlight--;if(!inFlight&&closeWhenIdle){closeWhenIdle=false;closing=true;window.close();}}
 function validSender(event){if(!window||event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||!event.senderFrame.url.startsWith(origin+'/'))throw Error('Untrusted editor request.');}
 let bridge=null;
